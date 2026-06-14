@@ -13,19 +13,63 @@ PREFIX = "wiki_page_search_doc"
 
 @frappe.whitelist(allow_guest=True)
 def search(query, path, space):
-	r = frappe.cache()
-
 	if not space:
 		space = get_space_route(path)
+	# RediSearch is an optional Redis module that is not installed on every host
+	# (AddisFly fork). Try it, but fall back to a database search so wiki search
+	# always works.
+	try:
+		return _redisearch(query, space)
+	except Exception:
+		return _db_search(query, space)
+
+
+def _db_search(query, space):
+	import time
+
+	t0 = time.monotonic()
+	q = (query or "").strip()
+	if not q:
+		return {"docs": [], "total": 0, "duration": 0}
+	like = f"%{q}%"
+	route_filter = f"{space}/%" if space else "%"
+	rows = frappe.db.sql(
+		"""
+		SELECT name, title, route, content FROM `tabWiki Page`
+		WHERE published = 1 AND route LIKE %(space)s
+		  AND (title LIKE %(q)s OR content LIKE %(q)s)
+		ORDER BY (title LIKE %(q)s) DESC, modified DESC
+		LIMIT 10
+		""",
+		{"space": route_filter, "q": like},
+		as_dict=True,
+	)
+	for d in rows:
+		text = strip_html_tags(d.content or "")
+		idx = text.lower().find(q.lower())
+		if idx > 60:
+			snippet = "..." + text[idx - 40 : idx + 140]
+		else:
+			snippet = text[:180]
+		# light highlight
+		try:
+			import re
+
+			snippet = re.sub(re.escape(q), lambda m: f"<mark>{m.group(0)}</mark>", snippet, flags=re.I)
+		except Exception:
+			pass
+		d.content = snippet
+	return {"docs": rows, "total": len(rows), "duration": round((time.monotonic() - t0) * 1000)}
+
+
+def _redisearch(query, space):
+	r = frappe.cache()
 
 	client = Client(make_key(space), conn=r)
 
 	query = Query(query).paging(0, 5).highlight(tags=["<mark>", "</mark>"])
 
-	try:
-		result = client.search(query)
-	except ResponseError:
-		return {"total": 0, "docs": [], "duration": 0}
+	result = client.search(query)
 
 	names = []
 	for d in result.docs:
