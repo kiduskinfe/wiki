@@ -14,12 +14,17 @@ class WikiPageRenderer(DocumentPage):
 	def can_render(self):
 		if wiki_space_name := frappe.get_value("Wiki Space", {"route": self.path}):
 			wiki_space = frappe.get_doc("Wiki Space", wiki_space_name)
-			topmost_wiki_route = frappe.get_value(
-				"Wiki Page", wiki_space.wiki_sidebars[0].wiki_page, "route"
-			)
-			frappe.response.location = f"/{topmost_wiki_route}"
-			frappe.response.type = "redirect"
-			raise frappe.Redirect
+			# Guard: a Wiki Space with no sidebar items (or whose top page has no
+			# route) must not crash with IndexError -> 500. Fall through to the
+			# normal page lookup (404 if nothing matches) instead.
+			if wiki_space.wiki_sidebars:
+				topmost_wiki_route = frappe.get_value(
+					"Wiki Page", wiki_space.wiki_sidebars[0].wiki_page, "route"
+				)
+				if topmost_wiki_route:
+					frappe.response.location = f"/{topmost_wiki_route}"
+					frappe.response.type = "redirect"
+					raise frappe.Redirect
 		return self.search_in_doctypes_with_web_view()
 
 	def search_in_doctypes_with_web_view(self):

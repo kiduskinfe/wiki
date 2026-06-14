@@ -116,14 +116,27 @@ class WikiPage(WebsiteGenerator):
 			return name in acceptable_attributes
 
 		# returns html with escaped tags, escaped orphan >, <, etc.
-		escaped_html = bleach.clean(
-			html,
+		# bleach >=5 removed the `styles=` kwarg in favour of a css_sanitizer.
+		# Use it when available; otherwise sanitize without inline-style allowlisting
+		# (styles get stripped) — either way we must not crash on save/render.
+		clean_kwargs = dict(
 			tags=tags,
 			attributes={"*": attributes_filter, "svg": svg_attributes},
-			styles=bleach_allowlist.all_styles,
 			strip_comments=False,
 			protocols=["cid", "http", "https", "mailto"],
 		)
+		try:
+			from bleach.css_sanitizer import CSSSanitizer
+
+			clean_kwargs["css_sanitizer"] = CSSSanitizer(
+				allowed_css_properties=bleach_allowlist.all_styles
+			)
+		except Exception:
+			try:
+				clean_kwargs["styles"] = bleach_allowlist.all_styles
+			except Exception:
+				pass
+		escaped_html = bleach.clean(html, **clean_kwargs)
 
 		# sanitize iframe tags that aren't youtube links
 		soup = BeautifulSoup(escaped_html, "html.parser")
