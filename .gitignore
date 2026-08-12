@@ -14,3 +14,5 @@ wiki/public/node_modules
 cypress/screenshots
 cypress/videos
 __pycache__/
+node_modules
+node_modules
