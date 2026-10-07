@@ -146,6 +146,11 @@ class WikiPage(WebsiteGenerator):
 				iframe.replace_with(str(iframe))
 
 		escaped_html = str(soup)
+		# Content is Markdown. bleach escapes the ">" that opens a Markdown blockquote,
+		# so any page containing one HTML tag (e.g. <details>) lost every quote box on
+		# save and showed a literal "&gt;". A line-leading ">" cannot open a tag, so
+		# restoring it is safe.
+		escaped_html = re.sub(r"(?m)^([ \t]*)&gt;", r"\1>", escaped_html)
 		return escaped_html
 
 	def update_page(self, title, content, edit_message, raised_by=None):
