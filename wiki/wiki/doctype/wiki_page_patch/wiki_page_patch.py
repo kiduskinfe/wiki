@@ -88,10 +88,16 @@ class WikiPagePatch(Document):
 		self.wiki_page_doc.update_page(self.new_title, self.new_code, self.message, self.raised_by)
 
 	def update_sidebars(self):
-		if not self.new_sidebar_items:
+		# not a stored field: absent when the patch is approved in a later request
+		if not getattr(self, "new_sidebar_items", None):
 			self.new_sidebar_items = "{}"
 
 		sidebars = json.loads(self.new_sidebar_items)
+		# AddisFly: new_sidebar_items is not a stored field — it only exists in the
+		# request that created the patch. A new page approved LATER (a suggestion)
+		# got no sidebar row and was unreachable. Fall back to the stored group.
+		if not sidebars and self.new and self.new_sidebar_group:
+			sidebars = {self.new_sidebar_group: [{"name": "new-wiki-page"}]}
 
 		sidebar_items = sidebars.items()
 		if sidebar_items:
