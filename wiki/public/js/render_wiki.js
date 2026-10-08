@@ -239,15 +239,28 @@ window.RenderWiki = class RenderWiki extends Wiki {
     $(".web-sidebar ul").each(setSortable);
 
     frappe.call({
-      method: "wiki.wiki.doctype.wiki_page.wiki_page.has_edit_permission",
+      method: "wiki.wiki.doctype.wiki_page.wiki_page.get_edit_access",
       args: {},
       callback: (r) => {
         const urlParams = new URLSearchParams(window.location.search);
-        if (
-          r.message &&
-          !(urlParams.get("editWiki") || urlParams.get("newWiki"))
-        )
+        const access = r.message || {};
+        // AddisFly: Edit and Edit Sidebar used to be visible to EVERY reader — this
+        // callback only removed a "hide" class that was never there. Visibility is
+        // now enforced in CSS by these body classes, which the editor's own
+        // show/hide toggles cannot undo.
+        $("body").toggleClass("wiki-can-edit", !!access.edit)
+                 .toggleClass("wiki-can-suggest", !!access.suggest);
+        if (urlParams.get("editWiki") || urlParams.get("newWiki")) return;
+        if (access.edit) {
           $(".sidebar-edit-mode-btn, .edit-wiki-btn").removeClass("hide");
+        } else if (access.suggest) {
+          // AddisFly: staff propose, an approver accepts — nothing goes live on Save
+          $(".edit-wiki-btn").text(__("Suggest an edit")).removeClass("hide");
+          $(".save-wiki-page-btn").contents().filter(function () {
+            return this.nodeType === 3 && this.textContent.trim() === "Save";
+          }).replaceWith(__("Submit for review"));
+          $('.dropdown-item[data-tiptap-button="saveWikiPage"]').text(__("Submit for review"));
+        }
       },
     });
 

@@ -634,6 +634,21 @@ def has_edit_permission():
 	return frappe.has_permission(doctype="Wiki Page", ptype="write", throw=False)
 
 
+@frappe.whitelist(allow_guest=True)
+def get_edit_access():
+	"""edit: change pages directly (Wiki Approver / System Manager).
+	suggest: propose a change that an approver must accept (every staff member).
+
+	AddisFly 2026-10-08: Edit used to be shown only to approvers, so the review
+	path below them — a Wiki Page Patch "Under Review" — could not be reached and
+	staff had filed 0 suggestions. Suggesting never publishes anything."""
+	if frappe.session.user == "Guest":
+		return {"edit": False, "suggest": False}
+	edit = bool(frappe.has_permission(doctype="Wiki Page", ptype="write", throw=False))
+	suggest = edit or bool(frappe.has_permission(doctype="Wiki Page Patch", ptype="create", throw=False))
+	return {"edit": edit, "suggest": suggest}
+
+
 def strip_leading_title(content, title):
 	"""The page template already prints the title as the page heading. 1,308 pages
 	(migrated 2026-06) open with the same `# Title` line, so readers saw it twice.

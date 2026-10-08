@@ -24,7 +24,29 @@ class WikiPagePatch(Document):
 		add_comment_to_patch(self.name, self.message)
 		frappe.db.commit()
 
+	def on_update(self):
+		# A suggestion waiting for review tells the approvers once — on creation, or
+		# when a draft is sent for review. An approver's own edit is approved in the
+		# same request, so it never pings anyone.
+		if self.docstatus != 0 or self.status != "Under Review":
+			return
+		if not (self.flags.in_insert or self.has_value_changed("status")):
+			return
+		if frappe.has_permission("Wiki Page Patch", ptype="submit", user=self.raised_by, throw=False):
+			return
+		page = frappe.db.get_value("Wiki Page", self.wiki_page, "title") or self.wiki_page
+		_notify(_wiki_approvers(), _("Wiki suggestion to review: {0} (by {1})").format(
+			page if not self.new else (self.new_title or page), frappe.utils.get_fullname(self.raised_by)), self)
+
+	def on_submit_notify(self):
+		if not self.raised_by or self.raised_by == self.approved_by:
+			return
+		page = self.new_title or frappe.db.get_value("Wiki Page", self.wiki_page, "title") or self.wiki_page
+		verdict = _("approved and published") if self.status == "Approved" else _("not accepted")
+		_notify([self.raised_by], _("Your wiki suggestion for {0} was {1}").format(page, verdict), self)
+
 	def on_submit(self):
+		self.on_submit_notify()
 		if self.status == "Rejected":
 			return
 
@@ -105,8 +127,30 @@ class WikiPagePatch(Document):
 					)
 
 
+def _wiki_approvers():
+	"""Enabled users holding Wiki Approver (System Managers if there are none)."""
+	def holders(role):
+		return frappe.db.sql_list(
+			"""SELECT DISTINCT u.name FROM `tabUser` u JOIN `tabHas Role` r ON r.parent = u.name
+			   AND r.parenttype = 'User' WHERE r.role = %s AND u.enabled = 1
+			   AND u.name NOT IN ('Administrator', 'Guest')""", role)
+	return holders("Wiki Approver") or holders("System Manager")
+
+
+def _notify(users, subject, doc):
+	from frappe.desk.doctype.notification_log.notification_log import enqueue_create_notification
+
+	users = sorted({u for u in users if u and u != frappe.session.user})
+	if users:
+		enqueue_create_notification(users, {
+			"type": "Alert", "document_type": doc.doctype, "document_name": doc.name,
+			"subject": subject, "from_user": frappe.session.user})
+
+
 @frappe.whitelist()
 def add_comment_to_patch(reference_name, content):
+	# AddisFly: anyone logged in could comment on any suggestion
+	frappe.get_doc("Wiki Page Patch", reference_name).check_permission("read")
 	email = frappe.session.user
 	name = frappe.db.get_value("User", frappe.session.user, ["first_name"], as_dict=True).get(
 		"first_name"

@@ -4,6 +4,7 @@ import json
 from random import random
 
 import frappe
+from frappe import _
 import pymysql
 from frappe.model.document import Document
 from frappe.website.utils import cleanup_page_name
@@ -85,6 +86,10 @@ class WikiSpace(Document):
 
 @frappe.whitelist()
 def update_sidebar(sidebar_items):
+	# AddisFly 2026-10-08: had no permission check — any logged-in account,
+	# a customer's website login included, could rename or reorder the sidebar.
+	if not frappe.has_permission(doctype="Wiki Space", ptype="write", throw=False):
+		frappe.throw(_("Only wiki approvers can change the sidebar."), frappe.PermissionError)
 	sidebars = json.loads(sidebar_items)
 
 	sidebar_items = sidebars.items()

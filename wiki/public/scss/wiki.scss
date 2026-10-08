@@ -1182,3 +1182,10 @@ ins {
 		overflow-x: auto;
 	}
 }
+
+// AddisFly: Edit / Edit Sidebar only for those allowed (see set_edit_mode).
+// Approvers: both. Staff: "Suggest an edit" only. Anyone else: neither.
+body:not(.wiki-can-edit) .sidebar-edit-mode-btn,
+body:not(.wiki-can-edit):not(.wiki-can-suggest) .edit-wiki-btn {
+	display: none !important;
+}
