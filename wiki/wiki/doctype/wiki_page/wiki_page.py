@@ -287,7 +287,7 @@ class WikiPage(WebsiteGenerator):
 		context.number_of_revisions = frappe.db.count(
 			"Wiki Page Revision Item", {"wiki_page": self.name}
 		)
-		html = frappe.utils.md_to_html(self.content)
+		html = frappe.utils.md_to_html(strip_leading_title(self.content, self.title))
 		context.content = html
 		context.page_toc_html = (
 			self.calculate_toc_html(html) if wiki_settings.enable_table_of_contents else None
@@ -632,3 +632,19 @@ def delete_wiki_page(wiki_page_route):
 @frappe.whitelist(allow_guest=True)
 def has_edit_permission():
 	return frappe.has_permission(doctype="Wiki Page", ptype="write", throw=False)
+
+
+def strip_leading_title(content, title):
+	"""The page template already prints the title as the page heading. 1,308 pages
+	(migrated 2026-06) open with the same `# Title` line, so readers saw it twice.
+	Drop that first line when it repeats the title; any other first heading stays.
+	Display only — the stored content is untouched (AddisFly, 2026-10-08)."""
+	text = (content or "").lstrip("\ufeff")
+	stripped = text.lstrip()
+	if not stripped.startswith("# "):
+		return content
+	first, _, rest = stripped.partition("\n")
+	norm = lambda v: " ".join(frappe.utils.strip_html(v or "").replace("&amp;", "&").split()).lower()
+	if norm(first[2:]) != norm(title):
+		return content
+	return rest.lstrip("\n")

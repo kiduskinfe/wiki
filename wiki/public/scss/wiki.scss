@@ -158,6 +158,13 @@ body.dark {
 // sidebar
 .sidebar-column {
 	margin-top: -4.5rem;
+
+	// AddisFly: the desktop navbar is 90px, not 72px, so the grey sidebar started
+	// 18px low and left a white notch above it (hidden while every page opened
+	// scrolled down — fixed in wiki.js).
+	@include media-breakpoint-up(lg) {
+		margin-top: -90px;
+	}
 }
 
 .sortable-chosen,
@@ -1163,5 +1170,15 @@ ins {
 		}
 
 		all: unset;
+	}
+}
+
+// AddisFly: on a phone a wide Markdown table was cut off at the right edge with
+// no way to reach it — let it scroll inside its own box instead.
+@include media-breakpoint-down(md) {
+	.wiki-content table {
+		display: block;
+		max-width: 100%;
+		overflow-x: auto;
 	}
 }

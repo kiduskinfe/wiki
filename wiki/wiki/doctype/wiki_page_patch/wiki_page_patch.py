@@ -79,9 +79,16 @@ class WikiPagePatch(Document):
 					idx += 1
 					if item["name"] == "new-wiki-page":
 						item["name"] = self.new_wiki_page.name
-						wiki_space_name = frappe.get_value(
-							"Wiki Space", {"route": "/".join(self.wiki_page_doc.route.split("/")[:-1])}
-						)
+						# AddisFly: the space is the CLOSEST parent folder that is a
+						# Wiki Space. Looking up only the immediate parent failed for every
+						# page in a sub-folder (1,343 of 1,453): "Wiki Space None not found".
+						wiki_space_name = None
+						parts = self.wiki_page_doc.route.split("/")[:-1]
+						while parts and not wiki_space_name:
+							wiki_space_name = frappe.get_value("Wiki Space", {"route": "/".join(parts)})
+							parts.pop()
+						if not wiki_space_name:
+							frappe.throw(_("No Wiki Space found for {0}").format(self.wiki_page_doc.route))
 
 						wiki_space = frappe.get_doc("Wiki Space", wiki_space_name)
 						wiki_space.append(

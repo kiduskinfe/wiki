@@ -15,10 +15,18 @@ window.Wiki = class Wiki {
     let active_sidebar_item = $(".doc-sidebar .sidebar-item.active");
     if (active_sidebar_item.length > 0) {
       setTimeout(function () {
-        active_sidebar_item.get(0).scrollIntoView({
-          behavior: "smooth",
-          block: "center",
-        });
+        // AddisFly: scrollIntoView also scrolled the WINDOW, so every page opened
+        // part-way down with its title under the navbar. Scroll only the sidebar.
+        const item = active_sidebar_item.get(0);
+        let box = item.parentElement;
+        while (box && box !== document.body) {
+          const oy = getComputedStyle(box).overflowY;
+          if ((oy === "auto" || oy === "scroll") && box.scrollHeight > box.clientHeight) break;
+          box = box.parentElement;
+        }
+        if (!box || box === document.body) return;
+        const delta = item.getBoundingClientRect().top - box.getBoundingClientRect().top;
+        box.scrollTop += delta - (box.clientHeight - item.clientHeight) / 2;
       }, 50);
     }
   }
