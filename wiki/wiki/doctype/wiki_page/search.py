@@ -6,9 +6,49 @@ import frappe
 from frappe.utils import strip_html_tags, update_progress_bar
 from frappe.utils.redis_wrapper import RedisWrapper
 from redis.exceptions import ResponseError
-from redisearch import Client, IndexDefinition, Query, TextField
+
+# ⚠️ `redisearch` (the standalone client) HARD-PINS `redis==3.5.3`, and frappe
+# requires `redis~=4.5.5`. Listing it in requirements.txt therefore downgrades
+# redis-py on every `bench setup requirements` and takes the site down with
+# "cannot import name ... from redis" — that is exactly what caused the 502 on
+# 2026-10-12. It is also dead weight here: RediSearch is an optional Redis
+# SERVER module, and this host does not load it (`FT.SEARCH` is an unknown
+# command), so the index path can never succeed anyway.
+#
+# So the dependency is gone from requirements.txt and the import is optional.
+# Every entry point below degrades to the plain-SQL `_db_search` / to a no-op.
+# To actually use RediSearch you need BOTH a redis build with the module AND a
+# client that works on redis-py 4 (`redis.commands.search`, not this package).
+try:
+	from redisearch import Client, IndexDefinition, Query, TextField
+except ImportError:
+	Client = IndexDefinition = Query = TextField = None
 
 PREFIX = "wiki_page_search_doc"
+
+# None = not yet probed in this process. A `bench restart` re-probes, which is
+# the right granularity for something that only changes when redis is rebuilt.
+_SERVER_HAS_REDISEARCH = None
+
+
+def redisearch_available():
+	"""True only when the client library AND the Redis server module are present.
+
+	Checked with `COMMAND INFO FT.SEARCH` rather than `MODULE LIST`, because
+	MODULE LIST is non-empty whenever ANY module is loaded (RedisJSON, say) and
+	would be a false positive.
+	"""
+	global _SERVER_HAS_REDISEARCH
+
+	if Client is None:
+		return False
+	if _SERVER_HAS_REDISEARCH is None:
+		try:
+			info = frappe.cache().execute_command("COMMAND", "INFO", "FT.SEARCH")
+			_SERVER_HAS_REDISEARCH = bool(info and info[0])
+		except Exception:
+			_SERVER_HAS_REDISEARCH = False
+	return _SERVER_HAS_REDISEARCH
 
 
 @frappe.whitelist(allow_guest=True)
@@ -16,8 +56,10 @@ def search(query, path, space):
 	if not space:
 		space = get_space_route(path)
 	# RediSearch is an optional Redis module that is not installed on every host
-	# (AddisFly fork). Try it, but fall back to a database search so wiki search
-	# always works.
+	# (AddisFly fork). Try it when it is really there, but always fall back to a
+	# database search so wiki search works regardless.
+	if not redisearch_available():
+		return _db_search(query, space)
 	try:
 		return _redisearch(query, space)
 	except Exception:
@@ -101,6 +143,9 @@ def get_space_route(path):
 
 
 def rebuild_index():
+	if not redisearch_available():
+		return
+
 	r = frappe.cache()
 	r.set_value("wiki_page_index_in_progress", True)
 
@@ -133,12 +178,20 @@ def rebuild_index():
 
 
 def rebuild_index_in_background():
+	if not redisearch_available():
+		return
+
 	if not frappe.cache().get_value("wiki_page_index_in_progress"):
 		print(f"Queued rebuilding of search index for {frappe.local.site}")
 		frappe.enqueue(rebuild_index, queue="long")
 
 
 def rebuild_index_if_not_exists():
+	# Runs on the `all` scheduler (~every 4 min). Without this guard it refetched
+	# every Wiki Page's content and fired doomed FT.CREATEs ~360 times a day.
+	if not redisearch_available():
+		return
+
 	spaces = frappe.db.get_all("Wiki Space", pluck="route")
 	for space in spaces:
 		try:
@@ -150,6 +203,9 @@ def rebuild_index_if_not_exists():
 
 
 def create_index_for_records(records, space):
+	if not redisearch_available():
+		return
+
 	r = frappe.cache()
 	for i, d in enumerate(records):
 		if not hasattr(frappe.local, "request") and len(records) > 10:
@@ -165,6 +221,9 @@ def create_index_for_records(records, space):
 
 
 def remove_index_for_records(records, space):
+	if not redisearch_available():
+		return
+
 	r = frappe.cache()
 	for d in records:
 		try:
@@ -197,6 +256,9 @@ def remove_index(doc):
 
 
 def drop_index(space):
+	if not redisearch_available():
+		return
+
 	try:
 		client = Client(make_key(space), conn=frappe.cache())
 		client.drop_index(delete_documents=True)
