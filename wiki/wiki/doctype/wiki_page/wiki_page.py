@@ -238,10 +238,9 @@ class WikiPage(WebsiteGenerator):
 				context.parents = parents
 
 	def get_space_route(self):
-		spaces = frappe.db.get_all("Wiki Space", pluck="route")
-		for space_route in spaces:
-			if space_route in self.route:
-				return space_route
+		from wiki.wiki.doctype.wiki_page.search import get_space_route
+
+		return get_space_route(self.route)
 
 	def calculate_toc_html(self, html):
 		from bs4 import BeautifulSoup

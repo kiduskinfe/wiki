@@ -137,9 +137,17 @@ def _redisearch(query, space):
 
 
 def get_space_route(path):
-	for space in frappe.db.get_all("Wiki Space", pluck="route"):
-		if space in path:
-			return space
+	# AddisFly: the space is the longest space route the path STARTS with. A plain
+	# substring test sent "operations-manual/operations/reports-dashboards-guide"
+	# to the Board space ("board" is inside "dashboards") whenever that space
+	# happened to be listed first.
+	path = (path or "").strip("/")
+	matches = [
+		space
+		for space in frappe.db.get_all("Wiki Space", pluck="route")
+		if space and (path == space or path.startswith(space + "/"))
+	]
+	return max(matches, key=len) if matches else None
 
 
 def rebuild_index():
