@@ -770,6 +770,46 @@ h6:hover .feather-link {
 	background-color: var(--gray-700);
 }
 
+// Dark mode: frappe's website.bundle hard-codes light-theme colours for page
+// content — links #171717, <b> #383838, table header and code boxes #f3f3f3 —
+// so links and bold text vanish and table headers turn into white bars.
+body.dark .from-markdown {
+	a,
+	h4 a {
+		color: var(--blue-400);
+	}
+
+	table,
+	th,
+	td {
+		border-color: var(--border-color);
+	}
+
+	table thead {
+		background-color: var(--gray-900);
+	}
+
+	code:not(.hljs),
+	pre {
+		background-color: var(--code-bg-color);
+		color: var(--code-text-color);
+	}
+
+	pre code:not(.hljs) {
+		background-color: transparent;
+	}
+
+	pre,
+	blockquote {
+		border-color: var(--bqoute-border-color);
+	}
+
+	kbd {
+		background-color: var(--gray-700);
+		color: var(--gray-50);
+	}
+}
+
 // toc
 .page-toc {
 	background-color: var(--background-color);
@@ -1004,7 +1044,8 @@ h3,
 h4,
 h5,
 h6,
-strong {
+strong,
+b {
 	color: var(--text-color) !important;
 }
 
