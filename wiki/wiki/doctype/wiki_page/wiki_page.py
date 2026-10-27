@@ -272,6 +272,14 @@ class WikiPage(WebsiteGenerator):
 		context.dark_mode_logo = wiki_settings.dark_mode_logo
 		context.script = wiki_settings.javascript
 		context.wiki_search_scope = self.get_space_route()
+		# AddisFly: the wiki renderer never gets the website context's `boot`, so the
+		# template printed `frappe.boot = None` — a ReferenceError that stopped every
+		# script after it: no page-view record (staff reading was invisible), no
+		# "last updated" date, and the chat widget failed to start.
+		if not context.get("boot"):
+			from frappe.website.utils import get_boot_data
+
+			context.boot = get_boot_data()
 		context.metatags = {
 			"title": self.title,
 			"description": self.meta_description,
