@@ -77,13 +77,15 @@ after_migrate = ["wiki.wiki.doctype.wiki_page.search.rebuild_index_in_background
 # -----------
 # Permissions evaluated in scripted ways
 
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
-#
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+# AddisFly: a Wiki Space with Allowed Roles (the Board) is closed everywhere —
+# desk form, lists, Ask AI retrieval — not only on the rendered wiki page.
+permission_query_conditions = {
+	"Wiki Page": "wiki.wiki.doctype.wiki_page.wiki_page.get_permission_query_conditions",
+}
+
+has_permission = {
+	"Wiki Page": "wiki.wiki.doctype.wiki_page.wiki_page.has_permission",
+}
 
 # DocType Class
 # ---------------

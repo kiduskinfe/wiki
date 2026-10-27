@@ -24,32 +24,61 @@ from frappe.website.website_generator import WebsiteGenerator
 from wiki.wiki.doctype.wiki_page.search import remove_index, update_index
 
 
+def _space_roles():
+	"""{space route: [allowed roles]} for spaces that restrict reading (per request)."""
+	cache = getattr(frappe.local, "wiki_space_roles", None)
+	if cache is None:
+		cache = {}
+		for row in frappe.get_all(
+			"Has Role",
+			filters={"parenttype": "Wiki Space", "parentfield": "allowed_roles"},
+			fields=["parent", "role"],
+		):
+			route = frappe.db.get_value("Wiki Space", row.parent, "route")
+			if route:
+				cache.setdefault(route, []).append(row.role)
+		frappe.local.wiki_space_roles = cache
+	return cache
+
+
+def _space_open_to(space_route, user):
+	allowed = _space_roles().get(space_route)
+	if not allowed or user == "Administrator":
+		return True
+	roles = set(frappe.get_roles(user))
+	return "System Manager" in roles or bool(roles.intersection(allowed))
+
+
 def space_allows(route, user=None):
 	"""True if `user` may read pages of the Wiki Space that `route` belongs to.
 
 	A space with Allowed Roles (the Board) is readable only by those roles plus
-	System Manager / Administrator. Used by the page itself and by search, so a
-	restricted space cannot be read through another door."""
+	System Manager / Administrator. Used by the page itself, search, the desk
+	permission hooks and therefore Ask AI, so a restricted space has no side door."""
 	from wiki.wiki.doctype.wiki_page.search import get_space_route
 
-	user = user or frappe.session.user
-	if user == "Administrator":
-		return True
 	space_route = get_space_route(route)
-	if not space_route:
-		return True
-	space = frappe.db.get_value("Wiki Space", {"route": space_route}, "name")
-	if not space:
-		return True
-	allowed = frappe.get_all(
-		"Has Role",
-		filters={"parent": space, "parenttype": "Wiki Space", "parentfield": "allowed_roles"},
-		pluck="role",
-	)
-	if not allowed:
-		return True
-	roles = set(frappe.get_roles(user))
-	return "System Manager" in roles or bool(roles.intersection(allowed))
+	return True if not space_route else _space_open_to(space_route, user or frappe.session.user)
+
+
+def has_permission(doc, ptype=None, user=None):
+	"""Desk/API check: refuse any access to a page in a space the user is not allowed in.
+	None = no opinion, so the normal role permissions still decide."""
+	if not space_allows(doc.route, user):
+		return False
+	return None
+
+
+def get_permission_query_conditions(user=None):
+	"""List filter matching has_permission: hide pages of closed spaces."""
+	user = user or frappe.session.user
+	conds = []
+	for space_route in _space_roles():
+		if not _space_open_to(space_route, user):
+			r = frappe.db.escape(space_route)
+			like = frappe.db.escape(space_route + "/%")
+			conds.append(f"(`tabWiki Page`.route != {r} and `tabWiki Page`.route not like {like})")
+	return " and ".join(conds)
 
 
 def page_readable(name, route, allow_guest, user=None):
