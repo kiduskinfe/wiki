@@ -24,6 +24,46 @@ from frappe.website.website_generator import WebsiteGenerator
 from wiki.wiki.doctype.wiki_page.search import remove_index, update_index
 
 
+def space_allows(route, user=None):
+	"""True if `user` may read pages of the Wiki Space that `route` belongs to.
+
+	A space with Allowed Roles (the Board) is readable only by those roles plus
+	System Manager / Administrator. Used by the page itself and by search, so a
+	restricted space cannot be read through another door."""
+	from wiki.wiki.doctype.wiki_page.search import get_space_route
+
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	space_route = get_space_route(route)
+	if not space_route:
+		return True
+	space = frappe.db.get_value("Wiki Space", {"route": space_route}, "name")
+	if not space:
+		return True
+	allowed = frappe.get_all(
+		"Has Role",
+		filters={"parent": space, "parenttype": "Wiki Space", "parentfield": "allowed_roles"},
+		pluck="role",
+	)
+	if not allowed:
+		return True
+	roles = set(frappe.get_roles(user))
+	return "System Manager" in roles or bool(roles.intersection(allowed))
+
+
+def page_readable(name, route, allow_guest, user=None):
+	"""Can `user` read this page at all — the same rule the page view applies."""
+	user = user or frappe.session.user
+	if not space_allows(route, user):
+		return False
+	if allow_guest:
+		return True
+	if user == "Guest":
+		return False
+	return bool(frappe.has_permission("Wiki Page", "read", name, user=user))
+
+
 class WikiPage(WebsiteGenerator):
 	def before_save(self):
 		self.content = self.sanitize_html()
@@ -171,34 +211,12 @@ class WikiPage(WebsiteGenerator):
 		self.save()
 
 	def _verify_space_allowed_roles(self):
-		"""Enforce Wiki Space "Allowed Roles" for READ access.
+		"""Enforce Wiki Space "Allowed Roles" for READ access (AddisFly fork).
 
-		If the page's Wiki Space has Allowed Roles configured, only those roles
-		(plus System Manager / Administrator) may read its pages — direct URL
-		access included. Empty Allowed Roles = open to anyone who can read the
-		wiki. Without this the field only hid the navbar link; it did not block
-		access. (AddisFly fork.)
-		"""
-		user = frappe.session.user
-		if user == "Administrator":
-			return
-		space_route = (self.route or "").split("/")[0]
-		if not space_route:
-			return
-		space = frappe.db.get_value("Wiki Space", {"route": space_route}, "name")
-		if not space:
-			return
-		allowed = frappe.get_all(
-			"Has Role",
-			filters={"parent": space, "parenttype": "Wiki Space", "parentfield": "allowed_roles"},
-			pluck="role",
-		)
-		if not allowed:
-			return
-		user_roles = set(frappe.get_roles(user))
-		if "System Manager" in user_roles or user_roles.intersection(allowed):
-			return
-		frappe.throw(_("You are not permitted to view this page."), frappe.PermissionError)
+		Empty Allowed Roles = open to anyone who can read the wiki; otherwise only
+		those roles plus System Manager / Administrator, direct URL included."""
+		if not space_allows(self.route):
+			frappe.throw(_("You are not permitted to view this page."), frappe.PermissionError)
 
 	def verify_permission(self, permtype):
 		if permtype == "read":

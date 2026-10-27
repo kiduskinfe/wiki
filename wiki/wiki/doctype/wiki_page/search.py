@@ -59,11 +59,32 @@ def search(query, path, space):
 	# (AddisFly fork). Try it when it is really there, but always fall back to a
 	# database search so wiki search works regardless.
 	if not redisearch_available():
-		return _db_search(query, space)
+		return _readable_only(_db_search(query, space))
 	try:
-		return _redisearch(query, space)
+		return _readable_only(_redisearch(query, space))
 	except Exception:
-		return _db_search(query, space)
+		return _readable_only(_db_search(query, space))
+
+
+def _readable_only(result, limit=10):
+	"""Drop results the caller may not open (AddisFly fork).
+
+	This endpoint is guest-callable and returned title + excerpt for EVERY page:
+	anyone on the internet could search the login-only Operations Manual and the
+	Board space. Results now pass the same rule as opening the page."""
+	from wiki.wiki.doctype.wiki_page.wiki_page import page_readable
+
+	docs = result.get("docs") or []
+	guest = {
+		d.name: d.allow_guest
+		for d in frappe.get_all(
+			"Wiki Page", filters={"name": ["in", [d.name for d in docs] or [""]]}, fields=["name", "allow_guest"]
+		)
+	}
+	kept = [d for d in docs if page_readable(d.name, d.route, guest.get(d.name))][:limit]
+	result["docs"] = kept
+	result["total"] = len(kept)
+	return result
 
 
 def _db_search(query, space):
@@ -81,7 +102,7 @@ def _db_search(query, space):
 		WHERE published = 1 AND route LIKE %(space)s
 		  AND (title LIKE %(q)s OR content LIKE %(q)s)
 		ORDER BY (title LIKE %(q)s) DESC, modified DESC
-		LIMIT 10
+		LIMIT 40
 		""",
 		{"space": route_filter, "q": like},
 		as_dict=True,
