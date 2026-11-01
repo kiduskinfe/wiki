@@ -243,8 +243,12 @@ class WikiPage(WebsiteGenerator):
 		"""Enforce Wiki Space "Allowed Roles" for READ access (AddisFly fork).
 
 		Empty Allowed Roles = open to anyone who can read the wiki; otherwise only
-		those roles plus System Manager / Administrator, direct URL included."""
+		those roles plus System Manager / Administrator, direct URL included.
+		A logged-out visitor (e.g. a staff phone scanning a QR sticker) is sent to
+		login and back here instead of a dead-end "Not Permitted"."""
 		if not space_allows(self.route):
+			if frappe.session.user == "Guest" and getattr(frappe, "request", None):
+				self.redirect_to_login("read")
 			frappe.throw(_("You are not permitted to view this page."), frappe.PermissionError)
 
 	def verify_permission(self, permtype):
