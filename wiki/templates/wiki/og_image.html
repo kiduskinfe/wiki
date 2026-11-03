@@ -1,0 +1,155 @@
+{#
+	Open Graph card, screenshotted at 1200x630 by wiki/api/og_image.py.
+
+	Self-contained on purpose: the Tailwind build is purged against reader
+	markup, lives behind a content-hashed filename and carries dark-mode
+	variables -- none of which a deterministic screenshot wants. So the colours
+	below are the *light-mode* frappe-ui design tokens, inlined under their real
+	token names and resolved from
+	frontend/node_modules/frappe-ui/tailwind/tokens/{colors,typography}.js.
+	A drift test in test_wiki_document.py re-resolves them and fails if
+	frappe-ui moves a value. Bump TEMPLATE_VERSION whenever this file changes.
+
+	frappe.render_template does NOT autoescape: every interpolation here must
+	keep its `| e`, or a crafted page title becomes an SSRF vector.
+#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+	/* The card's palette, not just the rules it currently applies:
+	   outline-gray-2 (a footer hairline) and surface-gray-2 (the space accent
+	   bar) are both design decisions that have been on and off, and keeping
+	   them declared keeps the drift test guarding their values. */
+	:root {
+		--ink-gray-9: oklch(0.168 0 0);      /* lightMode/gray/950 */
+		--ink-gray-7: oklch(0.341 0 0);      /* lightMode/gray/800 */
+		--ink-gray-5: oklch(0.586 0 0);      /* lightMode/gray/600 */
+		--outline-gray-2: oklch(0.913 0 0);  /* lightMode/gray/300 */
+		--surface-gray-2: oklch(0.964 0 0);  /* lightMode/gray/100 */
+		--surface-base: oklch(1 0 0);        /* neutral/white */
+		--font-weight-semibold: 600;
+		--font-weight-medium: 500;
+
+		/* The space-mark palette, the same six tints `SPACE_COLORS` allows.
+		   All six are declared even though one card draws at most one: which
+		   one is data, and a missing token would silently paint the mark
+		   transparent. gray reuses surface-gray-2 / ink-gray-7 above. */
+		--surface-blue-2: oklch(0.96 0.021 241.348);     /* lightMode/blue/100 */
+		--ink-blue-7: oklch(0.561 0.168 252.355);        /* lightMode/blue/700 */
+		--surface-green-2: oklch(0.965 0.03 155.987);    /* lightMode/green/100 */
+		--ink-green-7: oklch(0.53 0.122 156.15);         /* lightMode/green/700 */
+		--surface-amber-2: oklch(0.967 0.045 91.733);    /* lightMode/amber/100 */
+		--ink-amber-7: oklch(0.612 0.136 63.758);        /* lightMode/amber/700 */
+		--surface-red-2: oklch(0.947 0.026 17.626);      /* lightMode/red/100 */
+		--ink-red-7: oklch(0.497 0.185 27.335);          /* lightMode/red/700 */
+		--surface-violet-2: oklch(0.943 0.031 297.722);  /* lightMode/violet/100 */
+		--ink-violet-7: oklch(0.438 0.155 286.38);       /* lightMode/violet/700 */
+	}
+
+	@font-face {
+		font-family: "Inter";
+		font-weight: 100 900;
+		font-style: normal;
+		/* `block` rather than `swap`: the capture is a single frame, so a
+		   fallback-then-swap would be baked in permanently. */
+		font-display: block;
+		src: url("/assets/wiki/fonts/Inter.var.woff2") format("woff2");
+	}
+
+	* { box-sizing: border-box; }
+
+	body {
+		width: 1200px;
+		height: 630px;
+		margin: 0;
+		padding: 72px;
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		background: var(--surface-base);
+		font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+		font-synthesis-weight: none;
+		-webkit-font-smoothing: antialiased;
+	}
+
+	.logo {
+		/* Sized against the 1200x630 card, not a page header — anything under
+		   ~72px reads as an afterthought at feed scale. The generous max-width
+		   is for wordmark logos, which are wide rather than square; contain
+		   keeps those from being cropped or stretched. */
+		height: 132px;
+		width: auto;
+		max-width: 520px;
+		object-fit: contain;
+		object-position: left center;
+	}
+
+	/* A generated mark or an icon on its tint: square, unlike a wordmark logo,
+	   and sized to the logo's 132px so a space reads the same either way. The
+	   tint uses the card's own token block, and `mark_color` is always one of
+	   six palette names. `overflow: hidden` is what rounds a generated SVG,
+	   which draws to its own edges. */
+	.mark {
+		height: 132px;
+		width: 132px;
+		border-radius: 24px;
+		overflow: hidden;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.og-glyph {
+		height: 76px;
+		width: 76px;
+	}
+
+	.breadcrumb {
+		font-size: 32px;
+		font-weight: var(--font-weight-semibold);
+		letter-spacing: 0.01em;
+		color: var(--ink-gray-5);
+		margin-bottom: 20px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.title {
+		font-weight: var(--font-weight-semibold);
+		letter-spacing: 0em;
+		line-height: 1.15;
+		color: var(--ink-gray-9);
+		margin: 0;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 3;
+		overflow: hidden;
+	}
+
+	.footer {
+		font-size: 28px;
+		font-weight: var(--font-weight-medium);
+		letter-spacing: 0.01em;
+		color: var(--ink-gray-7);
+	}
+</style>
+</head>
+<body>
+	<div class="header">
+		{% if logo_url %}<img class="logo" src="{{ logo_url | e }}" alt="">
+		{% elif avatar_url %}<img class="mark" src="{{ avatar_url | e }}" alt="">
+		{% elif icon_svg %}<div class="mark" style="background-color: var(--surface-{{ mark_color }}-2); color: var(--ink-{{ mark_color }}-7)">{{ icon_svg | safe }}</div>
+		{% endif %}
+	</div>
+
+	<div class="main">
+		{% if breadcrumb_trail %}<div class="breadcrumb">{{ breadcrumb_trail | e }}</div>{% endif %}
+		<div class="title" style="font-size: {{ title_font_size | int }}px">{{ title | e }}</div>
+	</div>
+
+	<div class="footer">{{ space_name | e }}</div>
+</body>
+</html>

@@ -1,0 +1,212 @@
+import { expect, test } from '../fixtures';
+import {
+	clickSidebarAddOption,
+	createDraftAndOpenEditor,
+	saveEditor,
+} from '../helpers/wiki';
+
+/**
+ * Tests for the external link feature in wiki.
+ * These tests verify that external links can be created, displayed with the correct icon,
+ * and work properly when clicked.
+ */
+test.describe('External Links', () => {
+	test('should create an external link and verify it appears with link icon', async ({
+		page,
+		wiki,
+	}) => {
+		await page.setViewportSize({ width: 1100, height: 900 });
+
+		const space = await wiki.space();
+		await page.goto(space.url());
+		await page.waitForLoadState('networkidle');
+
+		// Click the External Link button in the toolbar
+		await clickSidebarAddOption(page, 'External Link');
+
+		// Fill in the external link dialog
+		const externalLinkTitle = `external-link-${Date.now()}`;
+		const externalLinkUrl = 'https://example.com';
+
+		await page.getByLabel('Title').fill(externalLinkTitle);
+		await page.getByLabel('URL').fill(externalLinkUrl);
+		await page
+			.getByRole('dialog')
+			.getByRole('button', { name: 'Save' })
+			.click();
+		await page.waitForLoadState('networkidle');
+
+		// Verify the external link appears in the sidebar
+		const sidebarItem = page
+			.locator('aside')
+			.getByText(externalLinkTitle, { exact: true });
+		await expect(sidebarItem).toBeVisible({ timeout: 5000 });
+
+		// Verify it shows the "New" badge indicating it's a draft
+		const newBadge = page.locator('aside').getByText('New').first();
+		await expect(newBadge).toBeVisible();
+	});
+
+	test('should show external link with link icon after merge and open edit dialog on click', async ({
+		page,
+		wiki,
+	}) => {
+		await page.setViewportSize({ width: 1100, height: 900 });
+
+		const space = await wiki.space();
+		await page.goto(space.url());
+		await page.waitForLoadState('networkidle');
+
+		// Create an external link
+		await clickSidebarAddOption(page, 'External Link');
+
+		const externalLinkTitle = `merged-external-link-${Date.now()}`;
+		const externalLinkUrl = 'https://frappe.io/docs';
+
+		await page.getByLabel('Title').fill(externalLinkTitle);
+		await page.getByLabel('URL').fill(externalLinkUrl);
+		await page
+			.getByRole('dialog')
+			.getByRole('button', { name: 'Save' })
+			.click();
+		await page.waitForLoadState('networkidle');
+
+		// Submit for review and merge
+		// Submit for Review lives in the editor header, and adding an external
+		// link opens no editor. The sidebar's Merge is the manager's one-click
+		// path -- it walks the CR through submit, approve and merge.
+		const mergeButton = page.getByRole('button', {
+			name: 'Merge',
+			exact: true,
+		});
+		await expect(mergeButton).toBeVisible({ timeout: 10000 });
+		await mergeButton.click();
+		await expect(
+			page.locator('text=Change request merged').first(),
+		).toBeVisible({ timeout: 15000 });
+		await page.goto(space.url());
+		await page.waitForLoadState('networkidle');
+
+		// Verify the external link appears in the sidebar after merge
+		const sidebarItem = page
+			.locator('aside')
+			.getByText(externalLinkTitle, { exact: true });
+		await expect(sidebarItem).toBeVisible({ timeout: 5000 });
+
+		// Verify the "New" badge is NOT present (it's been merged)
+		const itemRow = sidebarItem.locator('..');
+		const newBadge = itemRow.getByText('New');
+		await expect(newBadge).not.toBeVisible();
+
+		// Click on the external link - should open edit dialog, not navigate
+		await sidebarItem.click();
+
+		// Verify the edit dialog appears
+		const editDialog = page.getByRole('dialog');
+		await expect(editDialog).toBeVisible({ timeout: 5000 });
+
+		// Verify the dialog title is "Edit External Link"
+		const dialogTitle = editDialog.getByText('Edit External Link');
+		await expect(dialogTitle).toBeVisible();
+
+		// Verify the URL field contains the external URL
+		const urlInput = editDialog.getByLabel('URL');
+		await expect(urlInput).toHaveValue(externalLinkUrl);
+
+		// Close the dialog
+		await editDialog.getByRole('button', { name: 'Cancel' }).click();
+		await expect(editDialog).not.toBeVisible();
+	});
+
+	test('should show external link in public sidebar with link icon', async ({
+		page,
+		wiki,
+	}) => {
+		await page.setViewportSize({ width: 1100, height: 900 });
+
+		const space = await wiki.space();
+		await page.goto(space.url());
+		await page.waitForLoadState('networkidle');
+
+		// Create an external link
+		await clickSidebarAddOption(page, 'External Link');
+
+		const externalLinkTitle = `public-external-link-${Date.now()}`;
+		const externalLinkUrl = 'https://docs.frappe.io';
+
+		await page.getByLabel('Title').fill(externalLinkTitle);
+		await page.getByLabel('URL').fill(externalLinkUrl);
+		await page
+			.getByRole('dialog')
+			.getByRole('button', { name: 'Save' })
+			.click();
+		await page.waitForLoadState('networkidle');
+
+		// Also create a regular page so the space has a public page to open.
+		// The shared helper is what settles the draft route: creating a second
+		// item back to back can leave the tree click landing before the first
+		// draft has finished mounting.
+		const pageTitle = `test-page-${Date.now()}`;
+		const editor = await createDraftAndOpenEditor(page, space, pageTitle, {
+			waitForEditorApi: false,
+		});
+		await editor.click();
+		await page.keyboard.type('Test page content.');
+		await saveEditor(page);
+		await page.waitForLoadState('networkidle');
+
+		// Submit and merge both items
+		// Submit for Review lives in the editor header, and adding an external
+		// link opens no editor. The sidebar's Merge is the manager's one-click
+		// path -- it walks the CR through submit, approve and merge.
+		const mergeButton = page.getByRole('button', {
+			name: 'Merge',
+			exact: true,
+		});
+		await expect(mergeButton).toBeVisible({ timeout: 10000 });
+		await mergeButton.click();
+		await expect(
+			page.locator('text=Change request merged').first(),
+		).toBeVisible({ timeout: 15000 });
+		await page.goto(space.url());
+		await page.waitForLoadState('networkidle');
+
+		// Click on the page
+		await page.locator('aside').getByText(pageTitle, { exact: true }).click();
+		await page.waitForLoadState('networkidle');
+
+		// Now open the public view
+		const viewPublicButton = page.locator('a:has-text("View public page")');
+		if (
+			await viewPublicButton.isVisible({ timeout: 2000 }).catch(() => false)
+		) {
+			const publicHref = await viewPublicButton.getAttribute('href');
+			if (!publicHref) return;
+			const publicPage = await page.context().newPage();
+			await publicPage.goto(publicHref);
+			await publicPage.waitForLoadState('networkidle');
+			await publicPage.setViewportSize({ width: 1100, height: 900 });
+
+			// Verify the sidebar is visible on the public page
+			const sidebar = publicPage.locator('.wiki-sidebar');
+			await expect(sidebar).toBeVisible({ timeout: 10000 });
+
+			// Verify the external link appears in the public sidebar
+			const publicExternalLink = sidebar.getByText(externalLinkTitle, {
+				exact: true,
+			});
+			await expect(publicExternalLink).toBeVisible({ timeout: 5000 });
+
+			// Verify clicking on the external link opens the URL (has target="_blank")
+			const linkElement = publicExternalLink.locator('..');
+			const targetAttr = await linkElement.getAttribute('target');
+			expect(targetAttr).toBe('_blank');
+
+			// Verify the href is the external URL
+			const hrefAttr = await linkElement.getAttribute('href');
+			expect(hrefAttr).toBe(externalLinkUrl);
+
+			await publicPage.close();
+		}
+	});
+});

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+{#- No scroll-smooth: anchor jumps land instantly, which reads better for docs. -#}
+<html lang="en" class="scroll-pt-20">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>
+        {% block title %}
+        {{_("Frappe Wiki")}}
+        {% endblock %}
+    </title>
+
+    {% include "templates/includes/meta_block.html" %}
+    {% if disable_indexing %}
+    <meta name="robots" content="noindex" data-page-robots>
+    {% endif %}
+    {% if canonical_url %}
+    <link rel="canonical" href="{{ canonical_url }}">
+    <link rel="alternate" type="text/markdown" href="{{ canonical_url }}.md">
+    {% endif %}
+    {% if breadcrumbs %}
+    <script type="application/ld+json">{{ breadcrumbs | safe }}</script>
+    {% endif %}
+
+    <link rel="stylesheet" href="/assets/wiki/css/tailwind.css?v={{get_tailwindcss_hash()}}">
+
+    <!-- Hide x-cloak elements until Alpine loads -->
+    <style>
+        [x-cloak] { display: none !important; }
+        /* Sidebar collapsed state before Alpine loads */
+        html[data-sidebar-collapsed] .wiki-sidebar { width: 0 !important; border-right-width: 0 !important; }
+        html[data-sidebar-collapsed] .wiki-sidebar-toggle { left: 0.5rem !important; }
+        html:not([data-sidebar-collapsed]) .wiki-sidebar-toggle { left: calc(18rem - 0.25rem); }
+    </style>
+
+    <!-- Theme + sidebar initialization - must run before page renders to prevent flash -->
+    <script>
+        (function() {
+            // `theme` is frappe-ui's key, which the editor SPA now writes through
+            // useColorScheme; `wiki-theme` is what both surfaces used before and
+            // is still read so an existing preference survives. frappe-ui also
+            // stores 'system', which resolves against the OS.
+            const stored = localStorage.getItem('theme') || localStorage.getItem('wiki-theme');
+            const theme = stored === 'dark' || stored === 'light'
+                ? stored
+                : stored === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches
+                    ? 'dark'
+                    // Default to light theme if no preference is stored
+                    : 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+
+            // Read sidebar collapsed state to prevent layout shift
+            try {
+                var sidebarState = localStorage.getItem('sidebar.isCollapsed');
+                if (sidebarState === 'true') {
+                    document.documentElement.setAttribute('data-sidebar-collapsed', '');
+                }
+            } catch(e) {}
+        })();
+
+        // CSRF token for API requests
+        window.CSRF_TOKEN = '{{ csrf_token }}';
+    </script>
+
+    <script src="/assets/wiki/js/vendor/alpinejs/plugins/persist.js"></script>
+    <script src="/assets/wiki/js/vendor/alpinejs/plugins/collapse.js"></script>
+
+    <script defer src="/assets/wiki/js/vendor/alpinejs/core.js"></script>
+
+    {% block head %} {% endblock %}
+
+    {{ head_html or "" }}
+</head>
+{#- `data-wiki-bare` drives --wiki-chrome-h (see main.css): the height of the
+    sticky chrome above the sidebar, which everything below it offsets against.
+    It's a CSS variable rather than an inline value because the chrome is
+    desktop-only — below `lg` the offset has to collapse to zero. -#}
+<body class="min-h-screen antialiased bg-[var(--surface-base)] text-[var(--ink-gray-9)] text-base max-w-[2000px] mx-auto"
+      {% if hide_chrome %}data-wiki-bare{% endif %}>
+    {% if not hide_chrome %}
+    {% include "templates/wiki/includes/search_modal.html" %}
+
+    <!-- Mobile-only navbar at top -->
+    {% include "templates/wiki/includes/mobile_header.html" %}
+    {% endif %}
+
+    {#- The navbar is the whole desktop chrome: one full-width row above both
+        the sidebar and the content column. -#}
+    {% if not hide_chrome %}
+    {% include "templates/wiki/includes/header.html" %}
+    {% endif %}
+
+    <!-- Main flex container: sidebar + content column, both below the chrome -->
+    <div class="flex min-h-[calc(100vh-var(--wiki-chrome-h))]">
+        {% if not hide_chrome %}
+        {% include "templates/wiki/includes/sidebar.html" %}
+        {% endif %}
+
+        <!-- Content column: main + TOC -->
+        <div class="flex-1 min-w-0 flex flex-col">
+            {% block content %}
+            <main class="flex-1 min-w-0 px-4 py-6 lg:px-6 lg:py-8 xl:px-12 flex justify-center">
+                {% block body %} {% endblock %}
+            </main>
+            {% endblock %}
+        </div>
+    </div>
+    
+    <!-- Image lightbox overlay -->
+    <div id="image-viewer"
+         class="fixed inset-0 z-[9999] flex items-center justify-center cursor-zoom-out opacity-0 invisible transition-opacity duration-150 ease-in-out bg-[color-mix(in_srgb,var(--surface-base)_90%,transparent)]">
+        <img id="image-viewer-img"
+             class="min-w-[45rem] max-w-[60vw] max-h-[80vh] object-contain cursor-zoom-out max-[768px]:min-w-[100vw]" />
+    </div>
+
+    <!-- A <picture>'s dark <source> follows the OS, but the reader picks the wiki
+         theme. Point each one at the current theme, after SPA navigation too. -->
+    <script>
+        (function () {
+            function syncPictureSources() {
+                const media = document.documentElement.getAttribute('data-theme') === 'dark' ? 'all' : 'not all';
+                document
+                    .querySelectorAll('picture source[media="(prefers-color-scheme: dark)"], picture source[data-dark-source]')
+                    .forEach((source) => {
+                        source.dataset.darkSource = '';
+                        if (source.media !== media) source.media = media;
+                    });
+            }
+            syncPictureSources();
+            new MutationObserver(syncPictureSources).observe(document.documentElement, { attributeFilter: ['data-theme'] });
+            const content = document.getElementById('wiki-content');
+            if (content) new MutationObserver(syncPictureSources).observe(content, { childList: true, subtree: true });
+        })();
+    </script>
+
+    <!-- Wiki-owned highlight.js (highlight.js/lib/common — same language set as
+         the frappe-ui editor), so the public reader tokenises 1-1 with the
+         editor and the shared frappe-ui-code.css theme. Must load before
+         code-blocks.js, which calls window.hljs.highlightAll(). -->
+    <script src="/assets/wiki/js/wiki-highlight.bundle.js?v={{ get_asset_hash('public/js/wiki-highlight.bundle.js') }}"></script>
+    <script src="/assets/wiki/js/code-blocks.js?v={{ get_asset_hash('public/js/code-blocks.js') }}"></script>
+    <script src="/assets/wiki/js/image-viewer.js?v={{ get_asset_hash('public/js/image-viewer.js') }}"></script>
+    <script defer src="/assets/wiki/js/pdf-viewer.js?v={{ get_asset_hash('public/js/pdf-viewer.js') }}"></script>
+    <script src="/assets/wiki/js/mermaid-loader.js?v={{ get_asset_hash('public/js/mermaid-loader.js') }}"></script>
+    <script defer src="/assets/wiki/js/mermaid-renderer.js?v={{ get_asset_hash('public/js/mermaid-renderer.js') }}"></script>
+    {% if enable_view_tracking %}{% include "templates/wiki/includes/page_view.html" %}{% endif %}
+</body>
+{% block scripts %} {% endblock %}
+</html>

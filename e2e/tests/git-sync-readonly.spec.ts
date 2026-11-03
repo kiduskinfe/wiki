@@ -1,0 +1,69 @@
+import { expect, test } from '../fixtures';
+
+/**
+ * TB1b-ii — a git-synced Wiki Space renders read-only in the authoring SPA.
+ *
+ * We seed a synced space + a published page directly via the API (bypassing the
+ * GitHub fetch) and set last_sync_time so SpaceDetails does not auto-kick a real
+ * sync. The SPA should then show the "Synced from GitHub" banner, source the
+ * sidebar from the live tree, hide every mutation affordance, and open the page
+ * in a non-editable viewer.
+ */
+test.describe('Git-synced space (read-only)', () => {
+	const REPO = 'frappe/wiki';
+	const BRANCH = 'main';
+
+	test('renders read-only with no editing affordances', async ({
+		page,
+		wiki,
+	}) => {
+		// last_sync_time is set so SpaceDetails treats the space as already
+		// synced and skips the auto initial-sync (which would hit GitHub).
+		const pageTitle = `Synced Page ${Date.now()}`;
+		const space = await wiki.space({
+			git_synced: 1,
+			repo_full_name: REPO,
+			branch: BRANCH,
+			last_sync_status: 'Success',
+			last_sync_time: '2026-01-01 00:00:00',
+			pages: [
+				{
+					title: pageTitle,
+					content: '# Synced Heading\n\nThis content comes from the repo.',
+				},
+			],
+		});
+
+		await page.goto(space.url());
+		await page.waitForLoadState('networkidle');
+
+		// Synced banner (shared SpaceChromeBar): the repo link marks it as synced
+		// from GitHub, plus a Sync now action.
+		await expect(
+			page.locator(`a[href="https://github.com/${REPO}"]`),
+		).toBeVisible({ timeout: 10000 });
+		await expect(page.getByRole('button', { name: 'Sync now' })).toBeVisible();
+
+		// No create / mutation affordances in the sidebar.
+		await expect(
+			page.getByRole('button', { name: 'New page', exact: true }),
+		).toHaveCount(0);
+
+		// Open the synced page and confirm the viewer is non-editable.
+		await page.locator('aside').getByText(pageTitle, { exact: true }).click();
+		await page.waitForURL(/\/page\//);
+
+		const editor = page.locator('.ProseMirror');
+		await expect(editor).toBeVisible({ timeout: 10000 });
+		await expect(editor).toHaveAttribute('contenteditable', 'false');
+
+		// No Save button and no editor toolbar in read-only mode. The view
+		// count under the title is a link to analytics, not an edit control.
+		await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+		await expect(
+			page.locator(
+				'.wiki-editor-container button:not([data-testid="page-views-link"])',
+			),
+		).toHaveCount(0);
+	});
+});

@@ -8,8 +8,53 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "general_tab",
+  "space_name",
   "route",
-  "wiki_sidebars"
+  "switcher_order",
+  "column_break_bynr",
+  "app_switcher_logo",
+  "space_icon",
+  "space_color",
+  "avatar",
+  "avatar_style",
+  "avatar_seed",
+  "favicon",
+  "enable_feedback_collection",
+  "show_in_switcher",
+  "is_published",
+  "section_break_z5nn",
+  "wiki_sidebars",
+  "navbar_tab",
+  "logo_section",
+  "light_mode_logo",
+  "dark_mode_logo",
+  "section_break_fhui",
+  "navbar_items",
+  "access_control_tab",
+  "access_control_section",
+  "roles",
+  "contributions_section",
+  "allow_contributions",
+  "version_3_tab",
+  "root_group",
+  "enable_tabs",
+  "home_tab_title",
+  "home_tab_icon",
+  "main_revision",
+  "last_edited",
+  "git_sync_tab",
+  "git_synced",
+  "repo_full_name",
+  "branch",
+  "docs_subdir",
+  "github_installation_id",
+  "git_sync_status_column",
+  "last_sync_status",
+  "last_synced_commit_sha",
+  "last_sync_time",
+  "last_sync_error",
+  "wiki_config"
  ],
  "fields": [
   {
@@ -25,11 +70,287 @@
    "fieldtype": "Table",
    "label": "Wiki Sidebars",
    "options": "Wiki Group Item"
+  },
+  {
+   "fieldname": "general_tab",
+   "fieldtype": "Tab Break",
+   "label": "General"
+  },
+  {
+   "fieldname": "navbar_tab",
+   "fieldtype": "Tab Break",
+   "label": "Navbar"
+  },
+  {
+   "fieldname": "navbar_items",
+   "fieldtype": "Table",
+   "label": "Navbar Items",
+   "options": "Top Bar Item"
+  },
+  {
+   "fieldname": "logo_section",
+   "fieldtype": "Section Break",
+   "label": "Logo"
+  },
+  {
+   "fieldname": "light_mode_logo",
+   "fieldtype": "Attach Image",
+   "label": "Light Mode Logo"
+  },
+  {
+   "fieldname": "dark_mode_logo",
+   "fieldtype": "Attach Image",
+   "label": "Dark Mode Logo"
+  },
+  {
+   "fieldname": "section_break_fhui",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "space_name",
+   "fieldtype": "Data",
+   "label": "Space Name"
+  },
+  {
+   "fieldname": "app_switcher_logo",
+   "fieldtype": "Attach Image",
+   "label": "App Switcher Logo",
+   "make_attachment_public": 1
+  },
+  {
+   "description": "A lucide class name from the curated picker list, e.g. lucide-book-open-text.",
+   "fieldname": "space_icon",
+   "fieldtype": "Data",
+   "label": "Space Icon"
+  },
+  {
+   "description": "Tint behind the space icon: one of gray, blue, green, amber, red, violet.",
+   "fieldname": "space_color",
+   "fieldtype": "Data",
+   "label": "Space Color"
+  },
+  {
+   "description": "Generated mark as an SVG data URI. Hidden because it is a wall of text in a form.",
+   "fieldname": "avatar",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Avatar"
+  },
+  {
+   "fieldname": "avatar_style",
+   "fieldtype": "Data",
+   "label": "Avatar Style",
+   "read_only": 1
+  },
+  {
+   "description": "Re-rolled by Shuffle. Stored so the same mark can be rebuilt from the style.",
+   "fieldname": "avatar_seed",
+   "fieldtype": "Data",
+   "label": "Avatar Seed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "favicon",
+   "fieldtype": "Attach Image",
+   "label": "Favicon"
+  },
+  {
+   "fieldname": "column_break_bynr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_z5nn",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "access_control_tab",
+   "fieldtype": "Tab Break",
+   "label": "Access Control"
+  },
+  {
+   "description": "Leave empty for open access to all logged-in users. Add the <b>Guest</b> role for public/anonymous access.",
+   "fieldname": "access_control_section",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "roles",
+   "fieldtype": "Table",
+   "label": "Roles",
+   "options": "Wiki Space Role"
+  },
+  {
+   "fieldname": "contributions_section",
+   "fieldtype": "Section Break",
+   "label": "Contributions"
+  },
+  {
+   "default": "1",
+   "description": "Allow readers to propose edits via Change Requests. Users with write/merge access can always edit, even when this is off.",
+   "fieldname": "allow_contributions",
+   "fieldtype": "Check",
+   "label": "Accept Contributions"
+  },
+  {
+   "fieldname": "version_3_tab",
+   "fieldtype": "Tab Break",
+   "label": "Version 3"
+  },
+  {
+   "fieldname": "root_group",
+   "fieldtype": "Link",
+   "label": "Root Group",
+   "link_filters": "[[\"Wiki Document\",\"is_group\",\"=\",1]]",
+   "options": "Wiki Document",
+   "unique": 1
+  },
+  {
+   "fieldname": "main_revision",
+   "fieldtype": "Link",
+   "label": "Main Revision",
+   "options": "Wiki Revision",
+   "read_only": 1
+  },
+  {
+   "description": "Newest save or merge of a page in this space. The sidebar orders spaces by it.",
+   "fieldname": "last_edited",
+   "fieldtype": "Datetime",
+   "label": "Last Edited",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "description": "Deprecated: tabs were removed. Kept for backwards compatibility.",
+   "fieldname": "enable_tabs",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Enable Tabbed Navigation"
+  },
+  {
+   "default": "Home",
+   "description": "Deprecated: tabs were removed. Kept for backwards compatibility.",
+   "fieldname": "home_tab_title",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Home Tab Title"
+  },
+  {
+   "default": "lucide-house",
+   "description": "Deprecated: tabs were removed. Kept for backwards compatibility.",
+   "fieldname": "home_tab_icon",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Home Tab Icon"
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_feedback_collection",
+   "fieldtype": "Check",
+   "label": "Enable Feedback Collection?"
+  },
+  {
+   "default": "1",
+   "fieldname": "show_in_switcher",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Show in switcher?"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_published",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Is Published?"
+  },
+  {
+   "default": "0",
+   "fieldname": "switcher_order",
+   "fieldtype": "Int",
+   "label": "Switcher Order",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "git_sync_tab",
+   "fieldtype": "Tab Break",
+   "label": "Git Sync"
+  },
+  {
+   "default": "0",
+   "description": "When enabled, this space is synced one-way from a GitHub repository and is read-only in the wiki. Immutable after creation.",
+   "fieldname": "git_synced",
+   "fieldtype": "Check",
+   "label": "Git Synced?",
+   "read_only": 1
+  },
+  {
+   "description": "GitHub repository, e.g. frappe/wiki",
+   "fieldname": "repo_full_name",
+   "fieldtype": "Data",
+   "label": "Repository",
+   "read_only": 1
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Data",
+   "label": "Branch",
+   "read_only": 1
+  },
+  {
+   "description": "Optional sub-folder in the repo to sync (e.g. docs). Leave empty to sync from the repo root.",
+   "fieldname": "docs_subdir",
+   "fieldtype": "Data",
+   "label": "Docs Subdirectory",
+   "read_only": 1
+  },
+  {
+   "description": "GitHub App installation that grants access to the repo. Set via the connect-and-pick flow; lets the engine mint a token for private repos.",
+   "fieldname": "github_installation_id",
+   "fieldtype": "Data",
+   "label": "GitHub Installation ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "git_sync_status_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_sync_status",
+   "fieldtype": "Select",
+   "label": "Last Sync Status",
+   "options": "\nPending\nRunning\nSuccess\nError",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_synced_commit_sha",
+   "fieldtype": "Data",
+   "label": "Last Synced Commit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_sync_time",
+   "fieldtype": "Datetime",
+   "label": "Last Sync Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_sync_error",
+   "fieldtype": "Small Text",
+   "label": "Last Sync Error",
+   "read_only": 1
+  },
+  {
+   "description": "The most recently loaded .wiki.json from the repo (empty when the structure is inferred).",
+   "fieldname": "wiki_config",
+   "fieldtype": "Code",
+   "label": "Wiki Config (.wiki.json)",
+   "options": "JSON",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-04-11 17:49:56.612594",
+ "modified": "2026-01-06 16:12:13.356514",
  "modified_by": "Administrator",
  "module": "Wiki",
  "name": "Wiki Space",
@@ -59,9 +380,34 @@
    "role": "Wiki Approver",
    "share": 1,
    "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Wiki Manager",
+   "select": 1,
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Wiki User",
+   "select": 1,
+   "share": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "route"
 }

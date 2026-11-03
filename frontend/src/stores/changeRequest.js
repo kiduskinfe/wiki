@@ -1,0 +1,345 @@
+import { useUserStore } from '@/stores/user';
+import { createResource } from 'frappe-ui';
+import { defineStore } from 'pinia';
+import { computed, ref } from 'vue';
+
+export const useChangeRequestStore = defineStore('changeRequest', () => {
+	const currentChangeRequest = ref(null);
+	const isLoadingChangeRequest = ref(false);
+	// 'merging' | 'withdrawing' | null, for the whole round trip including the
+	// rehydrate that follows it. The CR walks Draft -> In Review -> Approved ->
+	// merged on the way, and the banner would otherwise render each of those in
+	// turn — a flash of "Approved! Ready to merge." on the way to a merge the
+	// user already asked for. Owned by whoever runs the flow (SpaceDetails),
+	// because it has to outlive the call itself.
+	const finalizing = ref(null);
+	let initChangeRequestPromise = null;
+	let loadChangesPromise = null;
+
+	const isChangeRequestMode = computed(
+		() => useUserStore().shouldUseChangeRequestMode,
+	);
+	const hasActiveChangeRequest = computed(() => !!currentChangeRequest.value);
+
+	const changeRequestResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.get_change_request',
+		onSuccess(data) {
+			currentChangeRequest.value = data;
+		},
+	});
+
+	const draftChangeRequestResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.get_or_create_draft_change_request',
+		onSuccess(data) {
+			currentChangeRequest.value = data;
+			isLoadingChangeRequest.value = false;
+		},
+		onError(error) {
+			console.error('Failed to get/create change request:', error);
+			isLoadingChangeRequest.value = false;
+		},
+	});
+
+	const changesResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.diff_change_request',
+	});
+
+	const submitReviewResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.submit_change_request',
+		onSuccess() {
+			refreshChangeRequest();
+		},
+	});
+
+	const archiveChangeRequestResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.archive_change_request',
+		onSuccess() {
+			currentChangeRequest.value = null;
+		},
+	});
+
+	const mergeChangeRequestResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.merge_change_request',
+	});
+
+	const approveChangeRequestResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.approve_change_request',
+	});
+
+	const createPageResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.create_cr_page',
+	});
+
+	const updatePageResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.update_cr_page',
+	});
+
+	const deletePageResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.delete_cr_page',
+	});
+
+	const restorePageResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.restore_cr_page',
+	});
+
+	const movePageResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.move_cr_page',
+	});
+
+	const reorderChildrenResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.reorder_cr_children',
+	});
+
+	const applyOperationsResource = createResource({
+		url: 'wiki.frappe_wiki.doctype.wiki_change_request.wiki_change_request.apply_cr_operations',
+	});
+
+	async function refreshChangeRequest() {
+		if (!currentChangeRequest.value) return null;
+		await changeRequestResource.submit({
+			name: currentChangeRequest.value.name,
+		});
+		return currentChangeRequest.value;
+	}
+
+	async function initChangeRequest(spaceId) {
+		if (!isChangeRequestMode.value || !spaceId) return null;
+
+		if (isLoadingChangeRequest.value && initChangeRequestPromise) {
+			await initChangeRequestPromise;
+			return currentChangeRequest.value;
+		}
+
+		isLoadingChangeRequest.value = true;
+		initChangeRequestPromise = draftChangeRequestResource.submit({
+			wiki_space: spaceId,
+		});
+		try {
+			await initChangeRequestPromise;
+		} finally {
+			initChangeRequestPromise = null;
+		}
+		return currentChangeRequest.value;
+	}
+
+	async function ensureChangeRequest(spaceId) {
+		if (!currentChangeRequest.value) {
+			await initChangeRequest(spaceId);
+		}
+		return !!currentChangeRequest.value;
+	}
+
+	async function loadChanges() {
+		if (!currentChangeRequest.value) return [];
+		if (loadChangesPromise) return loadChangesPromise;
+
+		loadChangesPromise = changesResource
+			.submit({
+				name: currentChangeRequest.value.name,
+				scope: 'summary',
+			})
+			.then(() => changesResource.data || [])
+			.finally(() => {
+				loadChangesPromise = null;
+			});
+
+		return loadChangesPromise;
+	}
+
+	async function submitForReview() {
+		if (!currentChangeRequest.value) return null;
+		await submitReviewResource.submit({
+			name: currentChangeRequest.value.name,
+		});
+		return currentChangeRequest.value;
+	}
+
+	async function archiveChangeRequest() {
+		if (!currentChangeRequest.value) return null;
+		await archiveChangeRequestResource.submit({
+			name: currentChangeRequest.value.name,
+		});
+		return currentChangeRequest.value;
+	}
+
+	async function mergeChangeRequest() {
+		if (!currentChangeRequest.value) return null;
+		await mergeChangeRequestResource.submit({
+			name: currentChangeRequest.value.name,
+		});
+		return currentChangeRequest.value;
+	}
+
+	// One-click self-serve publish from the editor. Merge now requires an
+	// Approved CR, so we walk the CR up the state machine first: submit a
+	// Draft / Changes-Requested CR into review, approve it, then merge. An
+	// already-Approved CR (e.g. someone else approved it) skips straight to
+	// the merge. The merge step may still throw on a conflict — the caller
+	// hands those off to the review page's conflict UI.
+	async function approveAndMergeChangeRequest() {
+		if (!currentChangeRequest.value) return null;
+		const name = currentChangeRequest.value.name;
+
+		if (
+			['Draft', 'Changes Requested'].includes(currentChangeRequest.value.status)
+		) {
+			await submitReviewResource.submit({ name });
+			await refreshChangeRequest();
+		}
+		if (currentChangeRequest.value.status === 'In Review') {
+			await approveChangeRequestResource.submit({ name });
+			await refreshChangeRequest();
+		}
+		await mergeChangeRequestResource.submit({ name });
+		return currentChangeRequest.value;
+	}
+
+	// The summary belongs to a change request that no longer exists once it is
+	// merged; leaving it around lets the old count drive the banner until the
+	// next CR's summary lands.
+	function clearChanges() {
+		changesResource.data = [];
+	}
+
+	const changes = computed(() => changesResource.data || []);
+	const changeCount = computed(() => changes.value.length);
+	const isSubmitting = computed(() => submitReviewResource.loading);
+	const isArchiving = computed(() => archiveChangeRequestResource.loading);
+	const isMerging = computed(
+		() =>
+			mergeChangeRequestResource.loading ||
+			approveChangeRequestResource.loading,
+	);
+	const isCreatingPage = computed(() => createPageResource.loading);
+	const isUpdatingPage = computed(() => updatePageResource.loading);
+	const isDeletingPage = computed(() => deletePageResource.loading);
+
+	const canSubmit = computed(() => {
+		return (
+			['Draft', 'Changes Requested'].includes(
+				currentChangeRequest.value?.status,
+			) && changeCount.value > 0
+		);
+	});
+
+	const canWithdraw = computed(() => {
+		return ['In Review', 'Changes Requested'].includes(
+			currentChangeRequest.value?.status,
+		);
+	});
+
+	async function createPage(
+		changeRequestName,
+		parentKey,
+		title,
+		content,
+		isGroup = false,
+		isExternalLink = false,
+		externalUrl = null,
+		route = null,
+	) {
+		return await createPageResource.submit({
+			name: changeRequestName,
+			parent_key: parentKey,
+			title,
+			content,
+			is_group: isGroup,
+			is_published: true,
+			is_external_link: isExternalLink,
+			external_url: externalUrl,
+			route,
+		});
+	}
+
+	async function updatePage(changeRequestName, docKey, fields) {
+		return await updatePageResource.submit({
+			name: changeRequestName,
+			doc_key: docKey,
+			fields,
+		});
+	}
+
+	async function deletePage(changeRequestName, docKey) {
+		return await deletePageResource.submit({
+			name: changeRequestName,
+			doc_key: docKey,
+		});
+	}
+
+	async function restorePage(changeRequestName, docKey) {
+		return await restorePageResource.submit({
+			name: changeRequestName,
+			doc_key: docKey,
+		});
+	}
+
+	async function movePage(
+		changeRequestName,
+		docKey,
+		newParentKey,
+		newOrderIndex,
+	) {
+		return await movePageResource.submit({
+			name: changeRequestName,
+			doc_key: docKey,
+			new_parent_key: newParentKey,
+			new_order_index: newOrderIndex,
+		});
+	}
+
+	async function reorderChildren(changeRequestName, parentKey, orderedDocKeys) {
+		return await reorderChildrenResource.submit({
+			name: changeRequestName,
+			parent_key: parentKey,
+			ordered_doc_keys: orderedDocKeys,
+		});
+	}
+
+	// Batched mutation entrypoint. The backend applies the whole list atomically
+	// inside its request transaction, returns a temp_key_map for any newly
+	// created nodes, the canonical affected items, deleted doc_keys, and the
+	// new operation_version. Callers should pass the last `operation_version`
+	// they observed as `baseVersion` so the server can detect concurrent edits
+	// and respond with a structured `version_conflict` instead of clobbering.
+	async function applyOperations(changeRequestName, baseVersion, operations) {
+		return await applyOperationsResource.submit({
+			name: changeRequestName,
+			base_version: baseVersion,
+			operations,
+		});
+	}
+
+	return {
+		currentChangeRequest,
+		isLoadingChangeRequest,
+		finalizing,
+		isChangeRequestMode,
+		hasActiveChangeRequest,
+		changes,
+		changeCount,
+		canSubmit,
+		canWithdraw,
+		isSubmitting,
+		isArchiving,
+		isMerging,
+		isCreatingPage,
+		isUpdatingPage,
+		isDeletingPage,
+		refreshChangeRequest,
+		initChangeRequest,
+		ensureChangeRequest,
+		loadChanges,
+		clearChanges,
+		submitForReview,
+		archiveChangeRequest,
+		mergeChangeRequest,
+		approveAndMergeChangeRequest,
+		createPage,
+		updatePage,
+		deletePage,
+		restorePage,
+		movePage,
+		reorderChildren,
+		applyOperations,
+	};
+});

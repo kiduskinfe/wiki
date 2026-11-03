@@ -1,0 +1,198 @@
+import { expect, test } from '../fixtures';
+
+/**
+ * Tests for the public reader search modal (search_modal.html).
+ *
+ * The search API is stubbed via route interception: the SQLite search index
+ * is only refreshed by a 5-minute scheduler job, so freshly created test
+ * pages are never searchable in time. The modal's behavior (rendering,
+ * keyboard navigation, selection) is what's under test, not the indexer.
+ *
+ * The keyboard test guards a past regression: the modal bound a fresh
+ * keydown handler on every open (`removeEventListener` never matched the
+ * new `.bind()` result), so after N opens each ArrowDown moved the
+ * highlight N rows — hence the open/close/reopen dance.
+ */
+
+const SEARCH_API =
+	'**/api/method/wiki.frappe_wiki.doctype.wiki_document.search.search*';
+const SEARCH_INPUT = 'input[placeholder="Search documentation"]';
+
+test.describe('Search Modal', () => {
+	test('keyboard navigation moves one result per keypress across reopens', async ({
+		page,
+		wiki,
+	}) => {
+		const space = await wiki.space({
+			pages: [
+				{
+					title: 'Search Host',
+					content: 'Host page for the search modal test.',
+				},
+				{
+					title: 'Search Target',
+					content: 'Target page the second result points at.',
+				},
+			],
+		});
+		const hostPage = space.page('Search Host');
+		const targetPage = space.page('Search Target');
+
+		await page.route(SEARCH_API, (route) =>
+			route.fulfill({
+				json: {
+					message: {
+						results: [
+							{
+								name: 'stub-1',
+								title: 'First <mark>stub</mark> result',
+								route: hostPage.route,
+								content: 'Snippet for the first <mark>stub</mark>.',
+								score: 3,
+							},
+							{
+								name: 'stub-2',
+								title: 'Second <mark>stub</mark> result',
+								route: targetPage.route,
+								content: 'Snippet for the second <mark>stub</mark>.',
+								score: 2,
+							},
+							{
+								name: 'stub-3',
+								title: 'Third <mark>stub</mark> result',
+								route: hostPage.route,
+								content: 'Snippet for the third <mark>stub</mark>.',
+								score: 1,
+							},
+						],
+						total: 3,
+					},
+				},
+			}),
+		);
+
+		await page.setViewportSize({ width: 1280, height: 800 });
+		await page.goto(`/${hostPage.route}`);
+		await page.waitForLoadState('networkidle');
+
+		const searchInput = page.locator(SEARCH_INPUT);
+		const results = page.getByTestId('search-result');
+
+		// First open: results render for the query
+		await page.getByRole('button', { name: 'Open search' }).click();
+		await expect(searchInput).toBeVisible();
+		await searchInput.fill('stub');
+		await expect(results).toHaveCount(3);
+
+		// Close and reopen — a leaked keydown listener from the first open
+		// would now double every arrow-key step
+		await page.keyboard.press('Escape');
+		await expect(searchInput).toBeHidden();
+		await page.getByRole('button', { name: 'Open search' }).click();
+		await searchInput.fill('stub');
+		await expect(results).toHaveCount(3);
+
+		// One ArrowDown must move the highlight exactly one row
+		await page.keyboard.press('ArrowDown');
+		await expect(results.nth(1)).toHaveClass(/surface-gray-3/);
+		await expect(results.nth(0)).not.toHaveClass(/surface-gray-3/);
+		await expect(results.nth(2)).not.toHaveClass(/surface-gray-3/);
+
+		// Enter navigates to the highlighted (second) result
+		await page.keyboard.press('Enter');
+		await page.waitForURL(`**/${targetPage.route}`, { timeout: 10000 });
+	});
+
+	test('switches theme from the search query', async ({ page, wiki }) => {
+		const space = await wiki.space({
+			pages: [{ title: 'Theme Host', content: 'Host page for theme actions.' }],
+		});
+		const hostPage = space.page('Theme Host');
+
+		await page.route(SEARCH_API, (route) =>
+			route.fulfill({ json: { message: { results: [], total: 0 } } }),
+		);
+		await page.addInitScript(() => localStorage.setItem('theme', 'light'));
+		await page.setViewportSize({ width: 1280, height: 800 });
+		await page.goto(`/${hostPage.route}`);
+		await page.waitForLoadState('networkidle');
+
+		const html = page.locator('html');
+		const searchInput = page.locator(SEARCH_INPUT);
+		const darkAction = page.getByTestId('search-theme-dark');
+		const lightAction = page.getByTestId('search-theme-light');
+		await expect(html).toHaveAttribute('data-theme', 'light');
+
+		await page.getByRole('button', { name: 'Open search' }).click();
+		await searchInput.fill('dark');
+		await expect(darkAction).toBeVisible();
+		await expect(lightAction).toBeHidden();
+		await expect(page.getByText('No results for')).toBeHidden();
+
+		await page.keyboard.press('Enter');
+		await expect(searchInput).toBeHidden();
+		await expect(html).toHaveAttribute('data-theme', 'dark');
+		expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe(
+			'dark',
+		);
+
+		await page.getByRole('button', { name: 'Open search' }).click();
+		await searchInput.fill('theme');
+		await expect(darkAction).toBeVisible();
+		await expect(lightAction).toBeVisible();
+		await lightAction.click();
+		await expect(html).toHaveAttribute('data-theme', 'light');
+	});
+
+	test('keeps hidden results out of keyboard selection while searching', async ({
+		page,
+		wiki,
+	}) => {
+		const space = await wiki.space({
+			pages: [{ title: 'Stale Host', content: 'Host page for stale results.' }],
+		});
+		const hostPage = space.page('Stale Host');
+
+		await page.route(SEARCH_API, async (route) => {
+			const query = new URL(route.request().url()).searchParams.get('query');
+			if (query === 'dark') {
+				await new Promise((resolve) => setTimeout(resolve, 3000));
+				return route.fulfill({ json: { message: { results: [], total: 0 } } });
+			}
+			return route.fulfill({
+				json: {
+					message: {
+						results: [
+							{
+								name: 'stale',
+								title: 'Stale result',
+								route: 'stale-result-route',
+								content: 'Should not be selectable once hidden.',
+								score: 1,
+							},
+						],
+						total: 1,
+					},
+				},
+			});
+		});
+		await page.addInitScript(() => localStorage.setItem('theme', 'light'));
+		await page.setViewportSize({ width: 1280, height: 800 });
+		await page.goto(`/${hostPage.route}`);
+		await page.waitForLoadState('networkidle');
+
+		const searchInput = page.locator(SEARCH_INPUT);
+		await page.getByRole('button', { name: 'Open search' }).click();
+		await searchInput.fill('stale');
+		await expect(page.getByTestId('search-result')).toHaveCount(1);
+
+		await searchInput.fill('dark');
+		await expect(page.getByTestId('search-result')).toHaveCount(0);
+		await expect(page.getByTestId('search-theme-dark')).toBeVisible();
+
+		await page.keyboard.press('ArrowDown');
+		await page.keyboard.press('Enter');
+		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+		await expect(page).toHaveURL(new RegExp(`/${hostPage.route}$`));
+	});
+});

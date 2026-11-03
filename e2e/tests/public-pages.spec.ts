@@ -1,0 +1,386 @@
+import { expect, test } from '../fixtures';
+import { getList } from '../helpers/frappe';
+import { CHANGE_REQUEST_URL_RE } from '../helpers/routes';
+import {
+	currentDraftDocKey,
+	openNewPageDialog,
+	publishChangeRequestFromReview,
+	saveEditor,
+} from '../helpers/wiki';
+interface WikiDocumentRoute {
+	route: string;
+	doc_key: string;
+}
+
+// Extend Window interface for Tiptap editor access in tests
+declare global {
+	interface Window {
+		wikiEditor: {
+			commands: {
+				setContent: (
+					content: string,
+					options?: { contentType?: string },
+				) => void;
+			};
+		};
+	}
+}
+
+/**
+ * Tests for the public-facing wiki pages.
+ * These tests verify the reader experience on published wiki pages,
+ * including layout components like sidebar and table of contents.
+ */
+test.describe('Public Wiki Pages', () => {
+	test.describe('Table of Contents', () => {
+		test('should render TOC with correct headings on published page', async ({
+			page,
+			request,
+			wiki,
+		}) => {
+			// Use wider viewport to see TOC (lg breakpoint = 1024px)
+			await page.setViewportSize({ width: 1100, height: 900 });
+
+			const space = await wiki.space();
+			await page.goto(space.url());
+			await page.waitForLoadState('networkidle');
+			// Create a new page with multiple headings
+
+			const pageTitle = `toc-test-page-${Date.now()}`;
+
+			// Click create button
+			await openNewPageDialog(page);
+
+			// Fill in page title
+			await page.getByLabel('Title').fill(pageTitle);
+			await page
+				.getByRole('dialog')
+				.getByRole('button', { name: 'Save' })
+				.click();
+			await page.waitForLoadState('networkidle');
+
+			// Open the newly created page from the tree
+			await page.locator('aside').getByText(pageTitle, { exact: true }).click();
+			await page.waitForURL(/\/draft\/[^/?#]+/);
+			const docKey = await currentDraftDocKey(page);
+
+			// Wait for editor to be visible and ready
+			const editor = page.locator('.ProseMirror, [contenteditable="true"]');
+			await expect(editor).toBeVisible({ timeout: 10000 });
+
+			// Wait for Tiptap editor to be exposed on window
+			await page.waitForFunction(() => window.wikiEditor !== undefined, {
+				timeout: 10000,
+			});
+
+			// Set markdown content directly via Tiptap's setContent command
+			// This is more reliable than typing, which depends on input rules
+			const markdownContent = `## Introduction
+
+This is the introduction section.
+
+## Getting Started
+
+Learn how to get started with this feature.
+
+### Prerequisites
+
+Before you begin.
+
+### Installation
+
+Follow these steps.
+
+## Advanced Usage
+
+Advanced topics.
+
+## Conclusion
+
+That is all.`;
+
+			await page.evaluate((content) => {
+				window.wikiEditor.commands.setContent(content, {
+					contentType: 'markdown',
+				});
+			}, markdownContent);
+
+			// Verify headings are in the editor before saving
+			await expect(editor.locator('h2:has-text("Introduction")')).toBeVisible({
+				timeout: 5000,
+			});
+			await expect(editor.locator('h2:has-text("Conclusion")')).toBeVisible();
+
+			// Click in editor to ensure it's focused and triggers any pending updates
+			await editor.click();
+			await page.waitForTimeout(500);
+
+			// Save the draft
+			await saveEditor(page);
+			await page.waitForLoadState('networkidle');
+			// Wait for save to complete in database
+			await page.waitForTimeout(2000);
+
+			// Submit for review and merge
+			await page.getByRole('button', { name: 'Submit for Review' }).click();
+			await page.getByRole('button', { name: 'Submit' }).click();
+			await expect(page).toHaveURL(CHANGE_REQUEST_URL_RE, {
+				timeout: 10000,
+			});
+			await publishChangeRequestFromReview(page);
+
+			// Open public page in new tab
+			const routes = await getList<WikiDocumentRoute>(
+				request,
+				'Wiki Document',
+				{
+					fields: ['route', 'doc_key'],
+					filters: { doc_key: docKey },
+					limit: 1,
+				},
+			);
+			expect(routes.length).toBe(1);
+			const publicUrl = `/${routes[0].route}`;
+			const publicPage = await page.context().newPage();
+			await publicPage.goto(publicUrl);
+			await publicPage.waitForLoadState('networkidle');
+			// Set viewport for TOC visibility (lg breakpoint = 1024px)
+			await publicPage.setViewportSize({ width: 1100, height: 900 });
+
+			// Verify the page content has headings
+			await expect(
+				publicPage.locator('#wiki-content h2:has-text("Introduction")'),
+			).toBeVisible({ timeout: 10000 });
+
+			// TOC is now server-rendered, so it should be immediately available
+			// Verify the TOC aside with "On this page" heading is visible
+			const tocAside = publicPage.locator('aside').filter({
+				has: publicPage.locator('text=On this page'),
+			});
+			await expect(tocAside).toBeVisible({ timeout: 10000 });
+
+			// Verify TOC contains the expected headings
+			const tocNav = tocAside.locator('nav');
+			await expect(tocNav.locator('a:has-text("Introduction")')).toBeVisible();
+			await expect(
+				tocNav.locator('a:has-text("Getting Started")'),
+			).toBeVisible();
+			await expect(
+				tocNav.locator('a:has-text("Advanced Usage")'),
+			).toBeVisible();
+			await expect(tocNav.locator('a:has-text("Conclusion")')).toBeVisible();
+
+			// h3 headings should also be in TOC
+			await expect(tocNav.locator('a:has-text("Prerequisites")')).toBeVisible();
+			await expect(tocNav.locator('a:has-text("Installation")')).toBeVisible();
+
+			// Verify clicking a TOC link scrolls to the heading
+			await tocNav.locator('a:has-text("Advanced Usage")').click();
+			await publicPage.waitForTimeout(500);
+
+			const advancedHeading = publicPage
+				.locator('h2')
+				.filter({ hasText: 'Advanced Usage' });
+			await expect(advancedHeading).toBeInViewport();
+
+			await publicPage.close();
+		});
+
+		test('scrolls the TOC so the active link stays in view', async ({
+			page,
+			wiki,
+		}) => {
+			await page.setViewportSize({ width: 1280, height: 720 });
+
+			// More headings than the TOC can show at once: the nav gets its own
+			// scrollbar, and the highlight has to bring itself back into view.
+			const content = Array.from(
+				{ length: 60 },
+				(_, i) => `## Section ${i}\n\nBody ${i}.`,
+			).join('\n\n');
+			const space = await wiki.space({
+				pages: [{ title: 'Reader Page', content }],
+			});
+			await page.goto(`/${space.page('Reader Page').route}`);
+			await page.waitForLoadState('networkidle');
+
+			const nav = page.locator('#wiki-toc nav');
+			await expect(nav).toBeVisible();
+			expect(
+				await nav.evaluate((el) => el.scrollHeight > el.clientHeight),
+			).toBe(true);
+
+			await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+
+			const active = nav.locator('.toc-link.active');
+			await expect(active).toHaveCount(1);
+			await expect
+				.poll(async () => nav.evaluate((el) => el.scrollTop))
+				.toBeGreaterThan(0);
+
+			const withinNav = await active.evaluate((link) => {
+				const view = link.closest('nav').getBoundingClientRect();
+				const box = link.getBoundingClientRect();
+				return box.top >= view.top - 1 && box.bottom <= view.bottom + 1;
+			});
+			expect(withinNav).toBe(true);
+		});
+
+		test('should hide TOC on mobile viewport', async ({ page, wiki }) => {
+			await page.setViewportSize({ width: 375, height: 667 }); // iPhone SE
+
+			// A published page of our own: the reader chrome under test only
+			// renders on a real page, and an ambient one may not exist.
+			const space = await wiki.space({
+				pages: [{ title: 'Reader Page', content: '## Section\n\nBody text.' }],
+			});
+			await page.goto(`/${space.page('Reader Page').route}`);
+			await page.waitForLoadState('networkidle');
+
+			// TOC aside should NOT be visible on mobile
+			const tocAside = page.locator('aside').filter({
+				has: page.locator('text=On this page'),
+			});
+
+			// Should be hidden (lg:block means hidden below lg)
+			await expect(tocAside).not.toBeVisible();
+		});
+	});
+
+	test.describe('Heading Anchors', () => {
+		test('should show hash link on heading hover in public page', async ({
+			page,
+			request,
+			wiki,
+		}) => {
+			await page.setViewportSize({ width: 1100, height: 900 });
+
+			const space = await wiki.space();
+			await page.goto(space.url());
+			await page.waitForLoadState('networkidle');
+
+			const pageTitle = `anchor-test-page-${Date.now()}`;
+
+			await openNewPageDialog(page);
+
+			await page.getByLabel('Title').fill(pageTitle);
+			await page
+				.getByRole('dialog')
+				.getByRole('button', { name: 'Save' })
+				.click();
+			await page.waitForLoadState('networkidle');
+
+			await page.locator('aside').getByText(pageTitle, { exact: true }).click();
+			await page.waitForURL(/\/draft\/[^/?#]+/);
+			const docKey = await currentDraftDocKey(page);
+
+			const editor = page.locator('.ProseMirror, [contenteditable="true"]');
+			await expect(editor).toBeVisible({ timeout: 10000 });
+			await page.waitForFunction(() => window.wikiEditor !== undefined, {
+				timeout: 10000,
+			});
+
+			const markdownContent = `## Heading One
+
+Intro text.
+
+## Heading Two
+
+More text.
+
+## Heading Three
+
+End.`;
+
+			await page.evaluate((content) => {
+				window.wikiEditor.commands.setContent(content, {
+					contentType: 'markdown',
+				});
+			}, markdownContent);
+
+			await expect(editor.locator('h2:has-text("Heading One")')).toBeVisible({
+				timeout: 5000,
+			});
+
+			await editor.click();
+			await page.waitForTimeout(500);
+
+			await saveEditor(page);
+			await page.waitForLoadState('networkidle');
+			await page.waitForTimeout(2000);
+
+			await page.getByRole('button', { name: 'Submit for Review' }).click();
+			await page.getByRole('button', { name: 'Submit' }).click();
+			await expect(page).toHaveURL(CHANGE_REQUEST_URL_RE, {
+				timeout: 10000,
+			});
+			await publishChangeRequestFromReview(page);
+
+			const routes = await getList<WikiDocumentRoute>(
+				request,
+				'Wiki Document',
+				{
+					fields: ['route', 'doc_key'],
+					filters: { doc_key: docKey },
+					limit: 1,
+				},
+			);
+			expect(routes.length).toBe(1);
+			const publicUrl = `/${routes[0].route}`;
+
+			const publicPage = await page.context().newPage();
+			await publicPage.setViewportSize({ width: 1100, height: 900 });
+			await publicPage.goto(publicUrl);
+			await publicPage.waitForLoadState('networkidle');
+
+			const heading = publicPage.locator(
+				'#wiki-content h2:has-text("Heading Two")',
+			);
+			await expect(heading).toBeVisible({ timeout: 10000 });
+			await heading.scrollIntoViewIfNeeded();
+
+			const anchor = heading.locator('.heading-anchor');
+			await expect(anchor).toHaveCount(1);
+			await expect(anchor).toHaveCSS('opacity', '0');
+
+			await heading.hover();
+			await expect(anchor).toHaveCSS('opacity', '1');
+
+			await publicPage.close();
+		});
+	});
+
+	test.describe('Sidebar', () => {
+		test('should show sidebar on desktop viewport', async ({ page, wiki }) => {
+			await page.setViewportSize({ width: 1100, height: 900 });
+
+			// A published page of our own: the reader chrome under test only
+			// renders on a real page, and an ambient one may not exist.
+			const space = await wiki.space({
+				pages: [{ title: 'Reader Page', content: '## Section\n\nBody text.' }],
+			});
+			await page.goto(`/${space.page('Reader Page').route}`);
+			await page.waitForLoadState('networkidle');
+
+			// Sidebar should be visible on desktop
+			const sidebar = page.locator('.wiki-sidebar, aside nav').first();
+			await expect(sidebar).toBeVisible();
+		});
+
+		test('should hide sidebar on mobile viewport', async ({ page, wiki }) => {
+			await page.setViewportSize({ width: 375, height: 667 }); // iPhone SE
+
+			// A published page of our own: the reader chrome under test only
+			// renders on a real page, and an ambient one may not exist.
+			const space = await wiki.space({
+				pages: [{ title: 'Reader Page', content: '## Section\n\nBody text.' }],
+			});
+			await page.goto(`/${space.page('Reader Page').route}`);
+			await page.waitForLoadState('networkidle');
+
+			// Desktop sidebar should be hidden on mobile
+			const desktopSidebar = page.locator('.wiki-sidebar');
+			await expect(desktopSidebar).not.toBeVisible();
+		});
+	});
+});

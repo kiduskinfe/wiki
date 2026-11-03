@@ -1,0 +1,457 @@
+{% from "templates/wiki/macros/sidebar_tree.html" import render_wiki_tree %}
+{% from "templates/wiki/macros/buttons.html" import render_icon %}
+
+{#- The sidebar starts below the full-width navbar, so `top` and height are
+    offset by --wiki-chrome-h (set in layout.html). Its own logo header moved
+    into includes/header.html for the same reason: there is no top-of-window
+    strip left for it here. -#}
+{#- Keeps its right border: the current Frappe docs layout separates the tree
+    from the content with a hairline (`border-r` at the default outline-gray-1),
+    and without one a white sidebar on a white page has nothing to sit against.
+    The border width animates to 0 on collapse so no hairline is left behind. -#}
+<div class="wiki-sidebar hidden lg:flex w-72 bg-[var(--surface-base)] border-r border-[var(--outline-gray-1)] flex-col flex-shrink-0 transition-[width,border-width] duration-300 ease-in-out overflow-hidden sticky top-[var(--wiki-chrome-h)] h-[calc(100vh-var(--wiki-chrome-h))]"
+     x-data="wikiSidebar()"
+     :style="isCollapsed ? 'width: 0; border-right-width: 0;' : 'width: 18rem;'">
+
+    {#- The whole tree renders at once. Groups that still carry a stale `is_tab`
+        flag are ordinary top-level groups here — the flag is cosmetic-only now
+        and never filters what the reader shows. -#}
+    {% set current_route = doc.route if doc else '' %}
+
+    <!-- Scrollable Navigation -->
+    <nav class="px-2 py-2 flex-1 overflow-y-auto">
+        {{ render_wiki_tree(nested_tree or [], current_route=current_route, expanded_nodes=expanded_nodes or set()) }}
+    </nav>
+</div>
+
+<!-- Sidebar Toggle Button (appears on hover at sidebar edge, always visible when collapsed) -->
+<div x-data="{ hovered: false }"
+     class="wiki-sidebar-toggle hidden lg:flex items-center fixed z-40 top-[var(--wiki-chrome-h)] h-[calc(100vh-var(--wiki-chrome-h))] transition-[left] duration-300 ease-in-out"
+     :style="$store.sidebar.isCollapsed ? 'left: 0.5rem;' : 'left: calc(18rem - 0.25rem);'"
+     @mouseenter="hovered = true"
+     @mouseleave="hovered = false">
+    <!-- Hover zone -->
+    <div class="w-8 h-full flex items-center justify-center">
+        <button @click="$store.sidebar.toggle()"
+                class="inline-flex items-center justify-center p-1 transition-all duration-200 cursor-pointer focus:outline-none"
+                :class="$store.sidebar.isCollapsed ? 'opacity-100' : (hovered ? 'opacity-100 scale-100' : 'opacity-0 scale-75')">
+            <svg class="w-4 h-4 text-[var(--ink-gray-4)] hover:text-[var(--ink-gray-6)] transition-colors duration-200"
+                 :class="$store.sidebar.isCollapsed ? '' : 'rotate-180'"
+                 xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m6 17 5-5-5-5"/>
+                <path d="m13 17 5-5-5-5"/>
+            </svg>
+        </button>
+    </div>
+</div>
+
+<script>
+    // Initialize Alpine.js stores
+    document.addEventListener('alpine:init', () => {
+        // Same key resolution as layout.html's pre-paint script: `theme` is what
+        // frappe-ui and the editor SPA write, `wiki-theme` is the older key both
+        // surfaces shared. Read the painted result rather than re-deriving it, so
+        // a stored 'system' can't disagree with what the page already shows.
+        const initialIsDark =
+            document.documentElement.getAttribute('data-theme') === 'dark';
+
+        // Theme store for dark/light mode
+        Alpine.store('theme', {
+            isDark: initialIsDark,
+            toggle() {
+                this.set(this.isDark ? 'light' : 'dark');
+            },
+            set(newTheme) {
+                this.isDark = newTheme === 'dark';
+                const root = document.documentElement;
+                // Suppress transitions for the swap itself, else every element
+                // with a colour transition animates and the page flashes. Two
+                // rAFs so the class survives the style + paint of the swap.
+                root.classList.add('no-transition');
+                root.setAttribute('data-theme', newTheme);
+                // Write frappe-ui's key so a toggle here and a toggle in the
+                // editor SPA agree. The old key is left alone rather than kept in
+                // sync: it is only ever read as a fallback.
+                localStorage.setItem('theme', newTheme);
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        root.classList.remove('no-transition');
+                    });
+                });
+            }
+        });
+
+        // Sidebar store for collapse state
+        Alpine.store('sidebar', {
+            isCollapsed: Alpine.$persist(false).as('sidebar.isCollapsed'),
+            init() {
+                // Remove pre-Alpine CSS attribute — Alpine's :style takes over from here
+                document.documentElement.removeAttribute('data-sidebar-collapsed');
+            },
+            toggle() {
+                this.isCollapsed = !this.isCollapsed;
+            }
+        });
+
+        // Keyboard shortcut for sidebar collapse (S key)
+        document.addEventListener('keydown', (e) => {
+            // Only trigger if not in an input/textarea/contenteditable
+            const target = e.target;
+            const isInput = target.tagName === 'INPUT' ||
+                           target.tagName === 'TEXTAREA' ||
+                           target.isContentEditable;
+
+            if (!isInput && e.key.toLowerCase() === 's' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                Alpine.store('sidebar').toggle();
+            }
+        });
+
+        // Navigation store for client-side page transitions
+        Alpine.store('navigation', {
+            loading: false,
+            currentRoute: '{{ doc.route if doc else "" }}',
+            prefetchCache: {},
+            prefetchTimer: null,
+
+            init() {
+                // Handle browser back/forward
+                window.addEventListener('popstate', (event) => {
+                    if (event.state?.route) {
+                        this.navigateTo(event.state.route, false);
+                    }
+                });
+                // Set initial state (preserve hash for TOC anchor links)
+                history.replaceState({ route: this.currentRoute }, '', window.location.pathname + window.location.hash);
+            },
+
+            prefetch(route) {
+                clearTimeout(this.prefetchTimer);
+                this.prefetchTimer = setTimeout(() => this.fetchIntoCache(route), 100);
+            },
+
+            cancelPrefetch() {
+                clearTimeout(this.prefetchTimer);
+            },
+
+            async fetchIntoCache(route) {
+                if (route === this.currentRoute || this.prefetchCache[route]) return;
+
+                try {
+                    const response = await fetch('/api/method/wiki.frappe_wiki.doctype.wiki_document.wiki_document.get_page_data', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Frappe-CSRF-Token': window.CSRF_TOKEN
+                        },
+                        body: JSON.stringify({ route })
+                    });
+                    const data = await response.json();
+                    if (data.message) {
+                        this.prefetchCache[route] = data.message;
+                    }
+                } catch (e) {
+                    // Silently fail - prefetch is just an optimization
+                }
+            },
+
+            async navigateTo(route, pushState = true) {
+                if (route === this.currentRoute) return;
+
+                // Check prefetch cache first
+                if (this.prefetchCache[route]) {
+                    this.showPage(route, this.prefetchCache[route], pushState);
+                    return;
+                }
+
+                this.loading = true;
+
+                try {
+                    const response = await fetch('/api/method/wiki.frappe_wiki.doctype.wiki_document.wiki_document.get_page_data', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Frappe-CSRF-Token': window.CSRF_TOKEN
+                        },
+                        body: JSON.stringify({ route })
+                    });
+                    const data = await response.json();
+
+                    if (data.message) {
+                        this.showPage(route, data.message, pushState);
+                    } else {
+                        throw new Error('Invalid response');
+                    }
+                } catch (error) {
+                    // Fallback to full page load
+                    window.location.href = '/' + route;
+                } finally {
+                    this.loading = false;
+                }
+            },
+
+            showPage(route, data, pushState) {
+                const previousUrl = window.location.origin + '/' + this.currentRoute;
+                this.updateContent(data);
+                this.currentRoute = route;
+                if (pushState) {
+                    history.pushState({ route }, '', '/' + route);
+                }
+                // Only after the URL changes: the view log reads the page path
+                // from the Referer header. Absent when view tracking is off.
+                window.wikiLogView?.(previousUrl);
+            },
+
+            updateContent(data) {
+                // Update page title
+                document.title = data.title;
+                const titleEl = document.getElementById('wiki-page-title');
+                if (titleEl) titleEl.textContent = data.title;
+
+                // Crawlers that render JS see the head as it is after navigation.
+                // Only the page's own tag: head HTML may carry a site-wide one.
+                let robotsEl = document.querySelector('meta[data-page-robots]');
+                if (data.disable_indexing && !robotsEl) {
+                    robotsEl = document.createElement('meta');
+                    robotsEl.name = 'robots';
+                    robotsEl.content = 'noindex';
+                    robotsEl.dataset.pageRobots = '';
+                    document.head.appendChild(robotsEl);
+                } else if (!data.disable_indexing) {
+                    robotsEl?.remove();
+                }
+
+                // Update content
+                const contentEl = document.getElementById('wiki-content');
+                if (contentEl) contentEl.innerHTML = data.rendered_content;
+
+                // Update prev/next navigation
+                this.updateNavButtons(data.prev_doc, data.next_doc);
+
+                // Update raw markdown for wikiDocument() component
+                if (Alpine.store('pageContent')) {
+                    Alpine.store('pageContent').markdown = data.raw_markdown;
+                }
+
+                // Update edit links
+                const editLinks = document.querySelectorAll('.wiki-edit-link');
+                if (editLinks) {
+                    editLinks.forEach(link => link.setAttribute('href', data.edit_link));
+                }
+
+                // Update last updated
+                const lastUpdatedEl = document.getElementById('wiki-last-updated');
+                if (lastUpdatedEl) {
+                    lastUpdatedEl.textContent = {{ _("Last updated {0}") | tojson }}.replace('{0}', data.last_updated);
+                    if (data.last_updated_on) {
+                        lastUpdatedEl.setAttribute('title', data.last_updated_on);
+                        lastUpdatedEl.setAttribute('data-timestamp', data.last_updated_on);
+                    }
+                }
+
+                // Update TOC HTML with new headings, then reinitialize scroll spy
+                this.updateToc(data.toc_headings || []);
+                if (Alpine.store('toc')) {
+                    Alpine.store('toc').refresh();
+                }
+
+                // Reset feedback widget
+                if (Alpine.store('feedback')) {
+                    Alpine.store('feedback').refresh();
+                }
+
+                // Re-apply syntax highlighting and code block enhancements
+                if (typeof initCodeBlocks === 'function') {
+                    initCodeBlocks();
+                } else if (typeof hljs !== 'undefined') {
+                    hljs.highlightAll();
+                }
+
+                // Render Mermaid diagrams after SPA navigation replaces the content
+                if (typeof renderWikiMermaid === 'function' && contentEl) {
+                    renderWikiMermaid(contentEl);
+                }
+
+                // Scroll to top
+                window.scrollTo(0, 0);
+            },
+
+            updateToc(headings) {
+                const tocContainer = document.getElementById('wiki-toc');
+                if (!tocContainer) return;
+
+                if (!headings || headings.length === 0) {
+                    tocContainer.innerHTML = '';
+                    return;
+                }
+
+                const escapeHtml = (str) => {
+                    const div = document.createElement('div');
+                    div.textContent = str;
+                    return div.innerHTML;
+                };
+
+                // Keep this markup identical to includes/toc.html — the two are
+                // the server-render / SPA-render halves of the same component.
+                let html = '<nav class="sticky top-[calc(var(--wiki-chrome-h)+24px)] max-h-[calc(100vh-var(--wiki-chrome-h)-4rem)] overflow-y-auto no-scrollbar flex flex-col leading-relaxed">';
+                html += '<span class="font-medium whitespace-nowrap pl-4 pb-1 border-l border-transparent">' + escapeHtml({{ _("On this page") | tojson }}) + '</span>';
+                // Same rule as the Jinja half: h3s only indent when the page
+                // also has an h2 (frappe-ui docs' `h3 && h2Exists`).
+                const hasH2 = headings.some(heading => heading.level === 2);
+                headings.forEach(heading => {
+                    const safeId = escapeHtml(heading.id);
+                    const safeText = escapeHtml(heading.text);
+                    const indent = heading.level >= 3 && hasH2 ? 'pl-7' : 'pl-4';
+                    html += `<a href="#${safeId}" data-toc-link="${safeId}" class="toc-link ${indent} py-1 border-l border-[var(--outline-gray-1)] text-[var(--ink-gray-6)] hover:text-[var(--ink-gray-9)]">${safeText}</a>`;
+                });
+                html += '</nav>';
+                tocContainer.innerHTML = html;
+            },
+
+            updateNavButtons(prevDoc, nextDoc) {
+                const navContainer = document.getElementById('wiki-nav-buttons');
+                if (!navContainer) return;
+
+                let html = '';
+
+                if (prevDoc || nextDoc) {
+                    // Keep this markup identical to the prev/next block in
+                    // document.html — server-render / SPA-render halves of one UI.
+                    // route/title are editor-set free text, so every value going
+                    // into this innerHTML is escaped: `esc` for attribute/text
+                    // contexts, and JSON.stringify (then esc'd) for the route
+                    // interpolated into the Alpine JS expression — mirroring the
+                    // `| tojson` guard the Jinja half uses. Stored-XSS guard.
+                    const esc = (str) => String(str ?? '')
+                        .replaceAll('&', '&amp;')
+                        .replaceAll('<', '&lt;')
+                        .replaceAll('>', '&gt;')
+                        .replaceAll('"', '&quot;')
+                        .replaceAll("'", '&#39;');
+                    const jsRoute = (route) => esc(JSON.stringify(route));
+                    const navLinkClasses = "group inline-flex min-w-0 max-w-[48%] items-center gap-2 h-8 px-2.5 rounded-4 text-base font-medium text-[var(--ink-gray-8)] bg-[var(--surface-gray-2)] hover:bg-[var(--surface-gray-3)] active:bg-[var(--surface-gray-4)] transition-colors no-underline";
+                    const arrowLeft = '<svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"></path><path d="m12 19-7-7 7-7"></path></svg>';
+                    const arrowRight = '<svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg>';
+                    html = '<div class="flex justify-between gap-5">';
+
+                    if (prevDoc) {
+                        html += `
+                            <a href="/${esc(prevDoc.route)}"
+                               @click.prevent="$store.navigation.navigateTo(${jsRoute(prevDoc.route)})"
+                               @mouseenter="$store.navigation.prefetch(${jsRoute(prevDoc.route)})"
+                               @mouseleave="$store.navigation.cancelPrefetch()"
+                               class="${navLinkClasses}">
+                                ${arrowLeft}
+                                <span class="truncate">${esc(prevDoc.title)}</span>
+                            </a>`;
+                    }
+
+                    if (nextDoc) {
+                        // No margin utility for the lone-next case: the flex
+                        // container's justify-between leaves a single child at
+                        // the start, which is where it belongs.
+                        html += `
+                            <a href="/${esc(nextDoc.route)}"
+                               @click.prevent="$store.navigation.navigateTo(${jsRoute(nextDoc.route)})"
+                               @mouseenter="$store.navigation.prefetch(${jsRoute(nextDoc.route)})"
+                               @mouseleave="$store.navigation.cancelPrefetch()"
+                               class="${navLinkClasses}">
+                                <span class="truncate">${esc(nextDoc.title)}</span>
+                                ${arrowRight}
+                            </a>`;
+                    }
+
+                    html += '</div>';
+                }
+
+                navContainer.innerHTML = html;
+            }
+        });
+    });
+
+    function wikiSidebar() {
+        return {
+            // Store expanded states with persistence
+            expandedStates: Alpine.$persist({}),
+            currentRoute: '{{ doc.route if doc else "" }}',
+            
+            get isCollapsed() {
+                return this.$store.sidebar.isCollapsed;
+            },
+            
+            init() {
+                this.revealCurrentPage(this.currentRoute);
+
+                // Keep the tree in sync when navigation happens client-side
+                // (sidebar links, prev/next buttons, browser back/forward)
+                this.$watch('$store.navigation.currentRoute', (route) => {
+                    this.currentRoute = route;
+                    this.revealCurrentPage(route);
+                });
+            },
+            
+            toggleSidebar() {
+                this.$store.sidebar.toggle();
+            },
+            
+            toggleNode(nodeId) {
+                // Toggle the expanded state for this node
+                this.expandedStates[nodeId] = !this.expandedStates[nodeId];
+            },
+            
+            isExpanded(nodeId) {
+                // Return whether this node is expanded (default to false)
+                return this.expandedStates[nodeId] || false;
+            },
+            
+            revealCurrentPage(route) {
+                // Expand all parent groups of the current page, then scroll it into view
+                if (!route) return;
+
+                this.$nextTick(() => {
+                    // Scoped to $root so we don't match the mobile drawer's copy of the tree
+                    const currentPageElement = this.$root.querySelector(`[data-route="${route}"]`);
+                    if (!currentPageElement) return;
+
+                    // Containers whose x-collapse expansion this call triggers
+                    const expandingContainers = [];
+                    let parentElement = currentPageElement.parentElement;
+                    while (parentElement && parentElement !== this.$root) {
+                        if (parentElement.classList.contains('wiki-children')) {
+                            const parentItem = parentElement.parentElement;
+                            const parentContent = parentItem?.querySelector('.wiki-item-content[data-node-id]');
+                            const nodeId = parentContent?.getAttribute('data-node-id');
+                            if (nodeId && !this.expandedStates[nodeId]) {
+                                this.expandedStates[nodeId] = true;
+                                expandingContainers.push(parentElement);
+                            }
+                        }
+                        parentElement = parentElement.parentElement;
+                    }
+
+                    const scrollToCurrentPage = () =>
+                        currentPageElement.scrollIntoView({ block: 'nearest' });
+
+                    if (!expandingContainers.length) {
+                        scrollToCurrentPage();
+                        return;
+                    }
+
+                    // Scroll only once the x-collapse height transition has
+                    // settled, so the position is measured against the final
+                    // layout. The timer is a fallback for when no transition
+                    // fires at all (e.g. prefers-reduced-motion).
+                    const outermost = expandingContainers[expandingContainers.length - 1];
+                    let scrolled = false;
+                    const finish = () => {
+                        if (scrolled) return;
+                        scrolled = true;
+                        outermost.removeEventListener('transitionend', finish);
+                        scrollToCurrentPage();
+                    };
+                    outermost.addEventListener('transitionend', finish);
+                    setTimeout(finish, 400);
+                });
+            }
+        }
+    }
+</script>

@@ -1,0 +1,98 @@
+import path from 'node:path';
+import frameworkUI from '@framework/ui/vite';
+import vue from '@vitejs/plugin-vue';
+import { defineConfig } from 'vite';
+
+// Conditionally import frappe-ui plugin
+async function getFrappeUIPlugin(isDev) {
+	if (isDev) {
+		try {
+			const module = await import(
+				path.resolve(__dirname, '../../frappe-ui/vite/index.js')
+			);
+			return module.default;
+		} catch (error) {
+			console.warn(
+				'Local frappe-ui not found, falling back to npm package:',
+				error.message,
+			);
+			// Fall back to npm package if local import fails
+			const module = await import('frappe-ui/vite');
+			return module.default;
+		}
+	}
+	const module = await import('frappe-ui/vite');
+	return module.default;
+}
+
+// https://vitejs.dev/config/
+export default defineConfig(async ({ command, mode }) => {
+	const isDev = process.env.NODE_ENV !== 'production';
+	const frappeui = await getFrappeUIPlugin(isDev);
+
+	const config = {
+		plugins: [
+			frappeui({
+				frappeProxy: {
+					port: 8080,
+					source: '^/(app|login|api|assets|files|private|razorpay_checkout)',
+				},
+				jinjaBootData: true,
+				lucideIcons: true,
+				buildConfig: {
+					indexHtmlPath: '../wiki/www/wiki-app.html',
+					emptyOutDir: true,
+					sourcemap: true,
+				},
+			}),
+			frameworkUI(),
+			vue(),
+		],
+		build: {
+			chunkSizeWarningLimit: 1500,
+			outDir: '../wiki/public/frontend',
+			emptyOutDir: true,
+			target: 'es2015',
+			sourcemap: true,
+		},
+		resolve: {
+			alias: {
+				'@': path.resolve(__dirname, 'src'),
+				'tailwind.config.js': path.resolve(__dirname, 'tailwind.config.js'),
+			},
+		},
+		optimizeDeps: {
+			include: ['highlight.js/lib/core'],
+			// frappe-ui ships raw source and reaches its own files through the
+			// `#molecules/*` imports map, which esbuild resolves without trying
+			// extensions. Pre-bundling any of its entries therefore fails on
+			// every extensionless internal import, so let Vite serve them as
+			// source instead.
+			exclude: ['frappe-ui', 'frappe-ui/editor', 'frappe-ui/list'],
+		},
+		server: {
+			allowedHosts: true,
+		},
+	};
+
+	// Add local frappe-ui alias only in development if the local frappe-ui exists
+	if (isDev) {
+		try {
+			// Check if the local frappe-ui directory exists
+			const fs = await import('node:fs');
+			const localFrappeUIPath = path.resolve(__dirname, 'frappe-ui');
+			if (fs.existsSync(localFrappeUIPath)) {
+				config.resolve.alias['frappe-ui'] = localFrappeUIPath;
+			} else {
+				console.warn('Local frappe-ui directory not found, using npm package');
+			}
+		} catch (error) {
+			console.warn(
+				'Error checking for local frappe-ui, using npm package:',
+				error.message,
+			);
+		}
+	}
+
+	return config;
+});

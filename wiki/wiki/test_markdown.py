@@ -1,0 +1,1045 @@
+# Copyright (c) 2025, Frappe and Contributors
+# See license.txt
+
+import unittest
+
+from wiki.wiki.markdown import CALLOUT_ICONS, render_markdown, render_markdown_with_toc
+
+
+class TestMarkdownRenderer(unittest.TestCase):
+	"""Tests for the custom markdown renderer."""
+
+	def test_basic_markdown(self):
+		"""Test basic markdown rendering."""
+		result = render_markdown("**bold** and *italic*")
+		self.assertIn("<strong>bold</strong>", result)
+		self.assertIn("<em>italic</em>", result)
+
+	def test_empty_content(self):
+		"""Test empty content returns empty string."""
+		self.assertEqual(render_markdown(""), "")
+		self.assertEqual(render_markdown(None), "")
+
+	def test_headings(self):
+		"""Test heading rendering with slugified IDs."""
+		result = render_markdown("# Heading 1\n## Heading 2")
+		self.assertIn('<h1 id="heading-1">Heading 1</h1>', result)
+		self.assertIn('<h2 id="heading-2">Heading 2</h2>', result)
+
+	def test_links(self):
+		"""Test link rendering."""
+		result = render_markdown("[Link text](https://example.com)")
+		self.assertIn('href="https://example.com"', result)
+		self.assertIn("Link text", result)
+
+	def test_code_block_strips_trailing_whitespace(self):
+		"""Trailing whitespace inside a fence shouldn't render as phantom empty rows."""
+		md = "```\nyarn install\nyarn dev   \n```\n"
+		result = render_markdown(md)
+		self.assertIn("<pre><code>yarn install\nyarn dev\n</code></pre>", result)
+
+	def test_mermaid_code_block_renders_as_diagram_container(self):
+		"""Mermaid fenced code blocks should render as diagram containers."""
+		md = "```mermaid\nflowchart TD\n  A[Start] --> B{Done?}\n```\n"
+		result = render_markdown(md)
+
+		self.assertIn('<pre class="mermaid">', result)
+		self.assertIn("flowchart TD", result)
+		self.assertIn("A[Start] --&gt; B{Done?}", result)
+		self.assertNotIn("<code", result)
+
+	def test_mermaid_source_is_html_escaped(self):
+		"""Mermaid source is untrusted; it must be escaped, never emitted as raw HTML.
+
+		Client-side rendering runs under securityLevel:'strict', but the server must
+		still escape so a malicious diagram can't inject markup into the page.
+		"""
+		md = '```mermaid\nflowchart TD\n  A["<script>alert(1)</script>"]\n```\n'
+		result = render_markdown(md)
+
+		self.assertIn('<pre class="mermaid">', result)
+		self.assertNotIn("<script>alert(1)</script>", result)
+		self.assertIn("&lt;script&gt;", result)
+
+	def test_non_mermaid_fence_still_highlights_as_code(self):
+		"""A regular fenced block must remain a normal code block, not a diagram."""
+		md = "```python\nprint('hello')\n```\n"
+		result = render_markdown(md)
+
+		self.assertIn('<pre><code class="language-python">', result)
+		self.assertNotIn('class="mermaid"', result)
+
+
+class TestHeadingSlugGeneration(unittest.TestCase):
+	"""Tests for heading ID/slug generation."""
+
+	def test_heading_slug_basic(self):
+		"""Test basic heading slug generation."""
+		result = render_markdown("## What is ERPNext?")
+		self.assertIn('<h2 id="what-is-erpnext">What is ERPNext?</h2>', result)
+
+	def test_heading_slug_with_spaces(self):
+		"""Test heading with spaces gets hyphenated slug."""
+		result = render_markdown("## Getting Started Guide")
+		self.assertIn('<h2 id="getting-started-guide">Getting Started Guide</h2>', result)
+
+	def test_heading_slug_lowercase(self):
+		"""Test heading slug is lowercase."""
+		result = render_markdown("## UPPERCASE HEADING")
+		self.assertIn('<h2 id="uppercase-heading">UPPERCASE HEADING</h2>', result)
+
+	def test_heading_slug_removes_special_chars(self):
+		"""Test heading slug removes special characters."""
+		result = render_markdown("## What's New? (2024)")
+		self.assertIn('<h2 id="whats-new-2024">What\'s New? (2024)</h2>', result)
+
+	def test_heading_slug_duplicate_handling(self):
+		"""Test duplicate headings get unique slugs."""
+		content = """## Introduction
+## Details
+## Introduction
+## Introduction"""
+		result = render_markdown(content)
+		self.assertIn('<h2 id="introduction">Introduction</h2>', result)
+		self.assertIn('<h2 id="details">Details</h2>', result)
+		self.assertIn('<h2 id="introduction-1">Introduction</h2>', result)
+		self.assertIn('<h2 id="introduction-2">Introduction</h2>', result)
+
+	def test_heading_slug_all_levels(self):
+		"""Test slug generation works for all heading levels."""
+		content = """# Level One
+## Level Two
+### Level Three
+#### Level Four
+##### Level Five
+###### Level Six"""
+		result = render_markdown(content)
+		self.assertIn('<h1 id="level-one">Level One</h1>', result)
+		self.assertIn('<h2 id="level-two">Level Two</h2>', result)
+		self.assertIn('<h3 id="level-three">Level Three</h3>', result)
+		self.assertIn('<h4 id="level-four">Level Four</h4>', result)
+		self.assertIn('<h5 id="level-five">Level Five</h5>', result)
+		self.assertIn('<h6 id="level-six">Level Six</h6>', result)
+
+	def test_heading_slug_unicode(self):
+		"""Test heading with unicode characters."""
+		result = render_markdown("## Café Setup")
+		self.assertIn('<h2 id="café-setup">Café Setup</h2>', result)
+
+	def test_heading_slug_numbers(self):
+		"""Test heading with numbers."""
+		result = render_markdown("## Step 1: Install")
+		self.assertIn('<h2 id="step-1-install">Step 1: Install</h2>', result)
+
+	def test_heading_slug_collapses_hyphens(self):
+		"""Test multiple spaces/special chars collapse to single hyphen."""
+		result = render_markdown("## Hello   ---   World")
+		self.assertIn('<h2 id="hello-world">Hello   ---   World</h2>', result)
+
+
+class TestImageCaptionSupport(unittest.TestCase):
+	"""Tests for image caption support in markdown.
+
+	Captions use the Stack Overflow pattern:
+	![alt text](image.jpg)
+	*caption text*
+
+	This renders as <p><img ...><em>caption</em></p> (no blank line between).
+	The alt text is for accessibility; caption is separate emphasized text.
+	"""
+
+	def test_image_with_caption_pattern(self):
+		"""Test image with caption on next line (no blank line)."""
+		# No blank line between image and caption
+		content = """![Alt text](/files/test.jpg)
+*This is the caption*"""
+		result = render_markdown(content)
+
+		# Should have image with alt
+		self.assertIn('<img src="/files/test.jpg"', result)
+		self.assertIn('alt="Alt text"', result)
+
+		# Should have em for caption (styled via CSS img + em)
+		self.assertIn("<em>This is the caption</em>", result)
+
+		# Should NOT have figure/figcaption (old pattern)
+		self.assertNotIn("<figure", result)
+		self.assertNotIn("<figcaption", result)
+
+	def test_caption_is_the_next_sibling_of_the_image(self):
+		"""The caption CSS is `img + em`, so no <br> may sit between them."""
+		result = render_markdown("![Alt](/files/test.jpg)\n*Caption*")
+		self.assertRegex(result, r'<img src="/files/test.jpg" alt="Alt" />\s*<em>Caption</em>')
+
+	def test_caption_after_image_on_its_own_line_inside_a_paragraph(self):
+		result = render_markdown("Some text\n![Alt](/files/test.jpg)\n*Caption*")
+		self.assertRegex(result, r'<img src="/files/test.jpg" alt="Alt" />\s*<em>Caption</em>')
+
+	def test_inline_image_does_not_turn_the_next_line_into_a_caption(self):
+		result = render_markdown("Click ![icon](/files/icon.png)\n*then save*")
+		self.assertIn('<img src="/files/icon.png" alt="icon" /><br />', result)
+
+	def test_soft_break_after_image_still_breaks_before_plain_text(self):
+		result = render_markdown("![Alt](/files/test.jpg)\nnot a caption")
+		self.assertIn("<br />", result)
+
+	def test_image_without_caption(self):
+		"""Test that images without caption render as simple img tags."""
+		result = render_markdown("![](/files/test.jpg)")
+
+		# Should NOT have figure wrapper
+		self.assertNotIn("<figure", result)
+		self.assertNotIn("<figcaption", result)
+
+		# Should have simple image
+		self.assertIn('<img src="/files/test.jpg"', result)
+
+	def test_image_with_title(self):
+		"""Test that images with title attribute render correctly."""
+		result = render_markdown('![Alt text](/files/test.jpg "Image title")')
+
+		# Should have image with alt and title
+		self.assertIn('alt="Alt text"', result)
+		self.assertIn('title="Image title"', result)
+
+		# Should NOT have figure/figcaption
+		self.assertNotIn("<figure", result)
+		self.assertNotIn("<figcaption", result)
+
+	def test_image_alt_removes_script_tags(self):
+		"""Strip script tags from alt text."""
+		result = render_markdown("![<script>alert('xss')</script>](/files/test.jpg)")
+
+		# Script tags should not be present in rendered HTML
+		self.assertNotIn("<script>alert", result)
+
+	def test_image_alt_and_title_preserve_non_script_html(self):
+		"""Keep non-script HTML in alt/title, but strip script tags only."""
+		result = render_markdown(
+			'![<b>Bold Alt</b><script>alert(1)</script>](/files/test.jpg "<i>Title</i><script>x</script>")'
+		)
+
+		self.assertIn('alt="<b>Bold Alt</b>"', result)
+		self.assertIn('title="<i>Title</i>"', result)
+		self.assertNotIn("<script>", result)
+
+	def test_video_markdown_renders_as_block_not_inline_caption_pattern(self):
+		"""Video markdown should render as a block and not merge with following italic text."""
+		content = """![Demo Video](/files/demo-video.mp4)
+*This should remain italic text*"""
+		result = render_markdown(content)
+
+		self.assertIn('<div data-type="video-block" data-src="/files/demo-video.mp4"', result)
+		self.assertIn('<video src="/files/demo-video.mp4" controls preload="metadata">', result)
+		self.assertIn("<p><em>This should remain italic text</em></p>", result)
+		self.assertNotIn("<p><div data-type=", result)
+
+	def test_multiple_images_with_captions(self):
+		"""Test multiple images with captions."""
+		content = """![First image](/files/first.jpg)
+*Caption for first image*
+
+Some text between images.
+
+![Second image](/files/second.jpg)
+*Caption for second image*"""
+		result = render_markdown(content)
+
+		# Both images should be rendered
+		self.assertIn('<img src="/files/first.jpg"', result)
+		self.assertIn('<img src="/files/second.jpg"', result)
+
+		# Both captions should be in em tags
+		self.assertIn("<em>Caption for first image</em>", result)
+		self.assertIn("<em>Caption for second image</em>", result)
+
+	def test_image_caption_separated_by_blank_line(self):
+		"""Test that blank line between image and caption separates them."""
+		# Blank line between image and caption - they become separate paragraphs
+		content = """![Alt text](/files/test.jpg)
+
+*This is NOT a caption, just italic text*"""
+		result = render_markdown(content)
+
+		# Both should render, but in separate paragraphs
+		self.assertIn('<img src="/files/test.jpg"', result)
+		self.assertIn("<em>This is NOT a caption, just italic text</em>", result)
+
+
+class TestCalloutRendering(unittest.TestCase):
+	"""Tests for callout/aside rendering.
+
+	Note: Callouts use a preprocessing step before markdown rendering.
+	The callout must start at the beginning of a line in the document.
+	"""
+
+	def test_note_callout(self):
+		"""Test note callout rendering."""
+		# Callout must be at start of document or after blank line
+		content = """:::note
+This is a note
+:::
+"""
+		result = render_markdown(content)
+		self.assertIn("callout-note", result)
+		self.assertIn("This is a note", result)
+
+	def test_tip_callout(self):
+		"""Test tip callout rendering."""
+		content = """:::tip
+This is a tip
+:::
+"""
+		result = render_markdown(content)
+		self.assertIn("callout-tip", result)
+
+	def test_caution_callout(self):
+		"""Test caution callout rendering."""
+		content = """:::caution
+Be careful
+:::
+"""
+		result = render_markdown(content)
+		self.assertIn("callout-caution", result)
+
+	def test_danger_callout(self):
+		"""Test danger callout rendering."""
+		content = """:::danger
+Dangerous!
+:::
+"""
+		result = render_markdown(content)
+		self.assertIn("callout-danger", result)
+
+	def test_warning_callout_maps_to_caution(self):
+		"""Test warning is alias for caution."""
+		content = """:::warning
+Warning text
+:::
+"""
+		result = render_markdown(content)
+		self.assertIn("callout-caution", result)
+
+	def test_callout_with_custom_title(self):
+		"""Test callout with custom title."""
+		content = """:::note[Custom Title]
+Content
+:::
+"""
+		result = render_markdown(content)
+		self.assertIn("Custom Title", result)
+
+	def test_callout_with_inline_markdown(self):
+		"""Test callout content renders bold, italic, and links."""
+		content = """:::note
+This has **bold text** and *italic text* and [a link](https://example.com)
+:::
+"""
+		result = render_markdown(content)
+		self.assertIn("callout-note", result)
+		self.assertIn("<strong>bold text</strong>", result)
+		self.assertIn("<em>italic text</em>", result)
+		self.assertIn('href="https://example.com"', result)
+		self.assertIn("a link", result)
+
+	def test_callout_html_is_the_alert_banner_structure(self):
+		"""Header row (icon + title), then a full-width body.
+
+		The editor's node view builds the same three elements, so the public page
+		and the editor agree — the old markup nested the body beside the title in
+		a `.callout-body` grid cell.
+		"""
+		result = render_markdown(":::tip[Careful]\nBody text\n:::\n")
+		self.assertIn('<aside class="callout callout-tip">', result)
+		self.assertIn('<div class="callout-header">', result)
+		self.assertIn('<span class="callout-title">Careful</span>', result)
+		self.assertIn('<div class="callout-content">', result)
+		self.assertNotIn("callout-body", result)
+
+	def test_callout_icon_is_the_alert_status_glyph(self):
+		"""Each type carries frappe-ui Alert's solid status glyph at 16px."""
+		for callout_type in ("note", "tip", "caution", "danger"):
+			with self.subTest(callout_type=callout_type):
+				result = render_markdown(f":::{callout_type}\nBody\n:::\n")
+				self.assertIn('viewBox="0 0 16 16"', result)
+				self.assertIn('fill="currentColor"', result)
+				self.assertIn(CALLOUT_ICONS[callout_type], result)
+
+	def test_indented_callout(self):
+		"""Test callout that is indented (e.g. inside a list item) still renders."""
+		content = """1. First item
+2. Second item
+  :::note
+  **This is an indented note inside a list.**
+  :::
+3. Third item"""
+		result = render_markdown(content)
+		self.assertIn("callout-note", result)
+		self.assertIn("This is an indented note inside a list.", result)
+
+
+class TestComplexMarkdownContent(unittest.TestCase):
+	"""Tests for complex markdown content with callouts and images."""
+
+	def test_markdown_with_callouts_and_images(self):
+		"""Test markdown content with callouts and images that have spaces in URLs.
+
+		The renderer should automatically URL-encode spaces in image URLs.
+		"""
+		# Note: URLs have UNENCODED spaces - the renderer should handle this
+		content = """## Method 1: Download and Install from Windows PC (USB)
+
+:::note
+This is the recommended method for Windows users
+:::
+
+:::warning
+You need a USB drive with at least 8GB of storage for this method.
+:::
+
+Once you have installed the app, you will need to set up your account. Visit your newly created site that has the app installed, and you should see a setup wizard.
+
+![Screenshot 2024-05-16 at 3.55.11 PM](/files/Screenshot 2024-05-16 at 3.55.11 PM.png)
+*Setup wizard screenshot*
+
+To complete the setup you will need to enter basic information like your country, name, email, and password. Make sure to remember your email and password as this is going to be your admin account.
+
+Once you complete the setup wizard, you will be redirected to the workspace of the Learning app. The top section of the workspace provides some important quick links. You can visit the Learning Portal and start setting up your very first course. The workspace also has some important charts. They show the count of daily signups and enrollments on the LMS.
+
+![Screenshot 2024-05-16 at 3.57.40 PM](/files/Screenshot 2024-05-16 at 3.57.40 PM.png)
+*Workspace screenshot*
+
+Some text after."""
+
+		result = render_markdown(content)
+
+		# Check headings (with slugified ID)
+		self.assertIn(
+			'<h2 id="method-1-download-and-install-from-windows-pc-usb">Method 1: Download and Install from Windows PC (USB)</h2>',
+			result,
+		)
+
+		# Check callouts
+		self.assertIn("callout-note", result)
+		self.assertIn("This is the recommended method for Windows users", result)
+		self.assertIn("callout-caution", result)  # warning maps to caution
+		self.assertIn("You need a USB drive with at least 8GB of storage for this method.", result)
+
+		# Check images are rendered (spaces in URLs automatically encoded to %20)
+		self.assertIn('<img src="/files/Screenshot%202024-05-16%20at%203.55.11%20PM.png"', result)
+		self.assertIn('alt="Screenshot 2024-05-16 at 3.55.11 PM"', result)
+
+		self.assertIn('<img src="/files/Screenshot%202024-05-16%20at%203.57.40%20PM.png"', result)
+		self.assertIn('alt="Screenshot 2024-05-16 at 3.57.40 PM"', result)
+
+		# Check captions are rendered as em tags
+		self.assertIn("<em>Setup wizard screenshot</em>", result)
+		self.assertIn("<em>Workspace screenshot</em>", result)
+
+		# Should NOT use figure/figcaption pattern
+		self.assertNotIn("<figure", result)
+		self.assertNotIn("<figcaption", result)
+
+		# Ensure images are NOT rendered as broken !<a> syntax
+		self.assertNotIn("!<a href=", result)
+		self.assertNotIn(">Screenshot 2024-05-16 at 3.55.11 PM</a>", result)
+
+
+class TestImageUrlSpaceEncoding(unittest.TestCase):
+	"""Tests for automatic URL-encoding of spaces in image URLs."""
+
+	def test_simple_image_with_spaces(self):
+		"""Test that spaces in image URLs are automatically encoded."""
+		content = "![My Image](/files/my image.png)"
+		result = render_markdown(content)
+
+		self.assertIn('<img src="/files/my%20image.png"', result)
+		self.assertIn('alt="My Image"', result)
+		self.assertNotIn("![My Image]", result)
+
+		# Should NOT use figure/figcaption
+		self.assertNotIn("<figure", result)
+		self.assertNotIn("<figcaption", result)
+
+	def test_image_with_title_and_spaces(self):
+		"""Test image with title attribute and spaces in URL."""
+		content = '![Alt Text](/files/path with spaces/image.png "Image Title")'
+		result = render_markdown(content)
+
+		self.assertIn('<img src="/files/path%20with%20spaces/image.png"', result)
+		self.assertIn('alt="Alt Text"', result)
+		self.assertIn('title="Image Title"', result)
+
+		# Should NOT use figure/figcaption
+		self.assertNotIn("<figure", result)
+		self.assertNotIn("<figcaption", result)
+
+	def test_already_encoded_url_unchanged(self):
+		"""Test that already URL-encoded URLs are not double-encoded."""
+		content = "![My Image](/files/my%20image.png)"
+		result = render_markdown(content)
+
+		# Should not double-encode %20 to %2520
+		self.assertIn('<img src="/files/my%20image.png"', result)
+		self.assertNotIn("%2520", result)
+
+
+class TestImageUrlWithParens(unittest.TestCase):
+	"""Frappe uploads commonly produce names like `image (14).png`. CommonMark
+	allows one level of balanced parens in URLs, so the parser handles them
+	natively; only literal spaces still need pre-encoding."""
+
+	def test_image_with_literal_parens(self):
+		content = "![](/files/image (14).png)"
+		result = render_markdown(content)
+		self.assertIn('<img src="/files/image%20(14).png"', result)
+		self.assertNotIn(".png)</p>", result)
+
+	def test_image_with_encoded_space_and_literal_parens(self):
+		"""The form Frappe actually emits: space encoded, parens literal."""
+		content = "![](/files/image%20(14).png)"
+		result = render_markdown(content)
+		self.assertIn('<img src="/files/image%20(14).png"', result)
+		self.assertNotIn(".png)</p>", result)
+
+	def test_image_with_parens_and_alt_and_title(self):
+		content = '![logo](/files/image (24).png "App Logo")'
+		result = render_markdown(content)
+		self.assertIn('<img src="/files/image%20(24).png"', result)
+		self.assertIn('alt="logo"', result)
+		self.assertIn('title="App Logo"', result)
+
+	def test_image_with_parens_inline_in_paragraph(self):
+		"""Image embedded in a sentence still renders as an inline image."""
+		content = "See ![](/files/image (14).png) for context."
+		result = render_markdown(content)
+		self.assertIn('<img src="/files/image%20(14).png"', result)
+		self.assertNotIn(".png) for", result)
+		self.assertIn("See ", result)
+		self.assertIn(" for context.", result)
+
+	def test_multiple_images_with_parens(self):
+		content = "![](/files/image (14).png)\n\nSome text.\n\n![](/files/image (15).png)"
+		result = render_markdown(content)
+		self.assertIn('<img src="/files/image%20(14).png"', result)
+		self.assertIn('<img src="/files/image%20(15).png"', result)
+
+
+class TestRawHTMLRendering(unittest.TestCase):
+	"""Tests for raw HTML rendering in markdown.
+
+	HTML should pass through without being escaped when escape=False
+	is configured on the renderer.
+	"""
+
+	def test_raw_html_div_not_escaped(self):
+		"""Test that raw HTML div tags are not escaped."""
+		content = '<div align="center"><img src="/files/hero-image.png"></div>'
+		result = render_markdown(content)
+
+		# HTML should be preserved, not escaped
+		self.assertIn('<div align="center">', result)
+		self.assertIn('<img src="/files/hero-image.png">', result)
+
+		# Should NOT contain escaped HTML entities
+		self.assertNotIn("&lt;div", result)
+		self.assertNotIn("&gt;", result)
+		self.assertNotIn("&quot;", result)
+
+	def test_raw_html_with_style(self):
+		"""Test that raw HTML with style attributes is preserved."""
+		content = '<div style="margin: 0 0 0 0;"><img src="/files/test.png"></div>'
+		result = render_markdown(content)
+
+		self.assertIn('<div style="margin: 0 0 0 0;">', result)
+		self.assertNotIn("&lt;", result)
+
+	def test_inline_html_in_markdown(self):
+		"""Test inline HTML mixed with markdown."""
+		content = """# Heading
+
+Some paragraph text.
+
+<div align="center">
+<img src="/files/centered-image.png">
+</div>
+
+More text after."""
+		result = render_markdown(content)
+
+		self.assertIn('<h1 id="heading">Heading</h1>', result)
+		self.assertIn('<div align="center">', result)
+		self.assertIn('<img src="/files/centered-image.png">', result)
+		self.assertIn("</div>", result)
+		self.assertNotIn("&lt;div", result)
+
+	def test_html_span_not_escaped(self):
+		"""Test that span tags are not escaped."""
+		content = 'Text with <span style="color: red;">colored</span> word.'
+		result = render_markdown(content)
+
+		self.assertIn('<span style="color: red;">colored</span>', result)
+		self.assertNotIn("&lt;span", result)
+
+
+class TestTableRendering(unittest.TestCase):
+	"""Tests for table rendering."""
+
+	def test_basic_table(self):
+		"""Test basic table rendering."""
+		content = """
+| Header 1 | Header 2 |
+| -------- | -------- |
+| Cell 1   | Cell 2   |
+"""
+		result = render_markdown(content)
+		self.assertIn("<table>", result)
+		self.assertIn("<th>", result)
+		self.assertIn("<td>", result)
+
+	def test_table_with_pipe_inside_inline_code(self):
+		"""Table must render even when an inline-code cell contains a pipe.
+
+		The editor (marked/GFM) treats `` `dict | list` `` as a single code span,
+		so authors legitimately write such rows. The public renderer must do the
+		same instead of dropping the whole table to a paragraph.
+		"""
+		content = """
+| Attribute   | Type                     | Description        |
+| ----------- | ------------------------ | ------------------ |
+| `report_name` | `str`                  | Name of the report |
+| `row_map`   | `dict[int, dict | list]` | Row index to data  |
+| `has_total` | `bool`                   | Trailing total row |
+"""
+		result = render_markdown(content)
+		self.assertIn("<table>", result)
+		self.assertIn("<code>dict[int, dict | list]</code>", result)
+
+
+class TestInternalLinkRendering(unittest.TestCase):
+	"""`[Label](wiki:<doc_key>)` renders with the key, for the reader to resolve."""
+
+	def test_internal_link_carries_the_key_not_an_href(self):
+		self.assertEqual(
+			render_markdown("See [Setup](wiki:a1b2c3d4e5f6)."),
+			'<p>See <a data-wiki-link="a1b2c3d4e5f6">Setup</a>.</p>\n',
+		)
+
+	def test_internal_link_keeps_its_title(self):
+		self.assertIn(
+			'<a data-wiki-link="a1b2" title="Guide">Setup</a>',
+			render_markdown('[Setup](wiki:a1b2 "Guide")'),
+		)
+
+	def test_external_links_are_untouched(self):
+		self.assertIn(
+			'<a href="https://wiki.example.com">x</a>', render_markdown("[x](https://wiki.example.com)")
+		)
+
+	def test_malformed_key_stays_a_plain_link(self):
+		self.assertIn('href="wiki:a%20b"', render_markdown("[x](<wiki:a b>)"))
+
+
+class TestTaskListRendering(unittest.TestCase):
+	"""Tests for task list rendering."""
+
+	def test_task_list(self):
+		"""Test task list rendering."""
+		content = """
+- [ ] Unchecked item
+- [x] Checked item
+"""
+		result = render_markdown(content)
+		self.assertIn('type="checkbox"', result)
+
+
+class TestTOCGeneration(unittest.TestCase):
+	"""Tests for Table of Contents (TOC) heading extraction."""
+
+	def test_toc_extracts_h2_headings(self):
+		"""Test that h2 headings are extracted for TOC."""
+		content = """## Introduction
+Some text.
+## Getting Started
+More text.
+## Conclusion
+Final text."""
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 3)
+		self.assertEqual(headings[0]["text"], "Introduction")
+		self.assertEqual(headings[0]["id"], "introduction")
+		self.assertEqual(headings[0]["level"], 2)
+		self.assertEqual(headings[1]["text"], "Getting Started")
+		self.assertEqual(headings[2]["text"], "Conclusion")
+
+	def test_toc_extracts_h3_headings(self):
+		"""Test that h3 headings are extracted for TOC."""
+		content = """## Main Section
+### Subsection 1
+### Subsection 2"""
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 3)
+		self.assertEqual(headings[0]["level"], 2)
+		self.assertEqual(headings[1]["level"], 3)
+		self.assertEqual(headings[2]["level"], 3)
+
+	def test_toc_excludes_h1_and_h4_plus(self):
+		"""Test that h1 and h4+ headings are NOT included in TOC."""
+		content = """# Title (h1 - excluded)
+## Section (h2 - included)
+### Subsection (h3 - included)
+#### Deep Section (h4 - excluded)
+##### Even Deeper (h5 - excluded)"""
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 2)
+		self.assertEqual(headings[0]["text"], "Section (h2 - included)")
+		self.assertEqual(headings[1]["text"], "Subsection (h3 - included)")
+
+	def test_toc_empty_for_no_headings(self):
+		"""Test that empty list is returned when no h2/h3 headings."""
+		content = """Just some paragraph text.
+
+More text here.
+
+# Only an h1 heading"""
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 0)
+
+	def test_toc_empty_for_empty_content(self):
+		"""Test that empty content returns empty list."""
+		html, headings = render_markdown_with_toc("")
+		self.assertEqual(html, "")
+		self.assertEqual(headings, [])
+
+	def test_toc_handles_duplicate_headings(self):
+		"""Test that duplicate headings get unique IDs in TOC."""
+		content = """## Introduction
+## Details
+## Introduction
+## Introduction"""
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 4)
+		ids = [h["id"] for h in headings]
+		self.assertEqual(ids[0], "introduction")
+		self.assertEqual(ids[1], "details")
+		self.assertEqual(ids[2], "introduction-1")
+		self.assertEqual(ids[3], "introduction-2")
+
+	def test_toc_preserves_heading_text(self):
+		"""Test that heading text is preserved correctly."""
+		content = "## What's New? (2024)"
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 1)
+		self.assertEqual(headings[0]["text"], "What's New? (2024)")
+		self.assertEqual(headings[0]["id"], "whats-new-2024")
+
+	def test_toc_preserves_underscores_in_heading_ids(self):
+		"""Test that underscores in heading text are preserved in IDs."""
+		content = """## get_filtered_list_url
+Some text.
+## add_to_date
+More text.
+## date_diff
+End."""
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 3)
+		self.assertEqual(headings[0]["id"], "get_filtered_list_url")
+		self.assertEqual(headings[1]["id"], "add_to_date")
+		self.assertEqual(headings[2]["id"], "date_diff")
+		self.assertIn('id="get_filtered_list_url"', html)
+		self.assertIn('id="add_to_date"', html)
+		self.assertIn('id="date_diff"', html)
+
+	def test_toc_with_mixed_content(self):
+		"""Test TOC extraction with complex content including callouts."""
+		content = """## Getting Started
+
+:::note
+This is a note callout.
+:::
+
+Some regular paragraph text.
+
+### Prerequisites
+
+- Item 1
+- Item 2
+
+### Installation
+
+Code block example.
+
+## Advanced Usage
+
+More content here."""
+		html, headings = render_markdown_with_toc(content)
+
+		self.assertEqual(len(headings), 4)
+		self.assertEqual(headings[0]["text"], "Getting Started")
+		self.assertEqual(headings[0]["level"], 2)
+		self.assertEqual(headings[1]["text"], "Prerequisites")
+		self.assertEqual(headings[1]["level"], 3)
+		self.assertEqual(headings[2]["text"], "Installation")
+		self.assertEqual(headings[2]["level"], 3)
+		self.assertEqual(headings[3]["text"], "Advanced Usage")
+		self.assertEqual(headings[3]["level"], 2)
+
+	def test_toc_html_matches_render_markdown(self):
+		"""Test that HTML output is identical to render_markdown."""
+		content = """## Heading One
+Some text.
+## Heading Two
+More text."""
+		html_with_toc, headings = render_markdown_with_toc(content)
+		html_only = render_markdown(content)
+
+		self.assertEqual(html_with_toc, html_only)
+
+	def test_toc_heading_ids_match_html(self):
+		"""Test that TOC heading IDs match the IDs in rendered HTML."""
+		content = """## First Section
+## Second Section
+### Nested Section"""
+		html, headings = render_markdown_with_toc(content)
+
+		for heading in headings:
+			# Verify each heading ID exists in the HTML
+			expected_tag = f'<h{heading["level"]} id="{heading["id"]}">'
+			self.assertIn(expected_tag, html)
+
+
+class TestTocHeadingText(unittest.TestCase):
+	"""TOC labels must keep inline-code headings (regression: they came back empty)."""
+
+	def _texts(self, content):
+		_, headings = render_markdown_with_toc(content)
+		return [h["text"] for h in headings]
+
+	def test_inline_code_heading_keeps_text(self):
+		"""A heading that is entirely inline code still yields a label."""
+		self.assertEqual(self._texts("## `GET /items`\n"), ["GET /items"])
+
+	def test_mixed_code_and_text_heading(self):
+		"""Inline code mixed with plain text is concatenated in order."""
+		self.assertEqual(self._texts("### `POST` and text\n"), ["POST and text"])
+
+	def test_plain_heading_unchanged(self):
+		"""Plain headings are unaffected by the code-aware extraction."""
+		self.assertEqual(self._texts("## Normal Heading\n"), ["Normal Heading"])
+
+
+class TestBlankLinePreservation(unittest.TestCase):
+	"""
+	prose-v3 zeroes paragraph margins, so author blank lines carry the spacing.
+	Counts mirror the editor: a gap of `g` blank lines yields `(g + 1) // 2 - 1`
+	blank paragraphs, or `g // 2` at the start of the document.
+	"""
+
+	def _gaps(self, content):
+		return render_markdown(content).count('class="wiki-blank-line"')
+
+	def test_single_blank_line_is_a_plain_paragraph_break(self):
+		"""The ordinary paragraph separator must not grow a gap."""
+		result = render_markdown("a\n\nb")
+		self.assertNotIn("wiki-blank-line", result)
+		self.assertIn("<p>a</p>\n<p>b</p>", result)
+
+	def test_extra_blank_lines_become_blank_paragraphs(self):
+		self.assertEqual(self._gaps("a\n\n\nb"), 0)
+		self.assertEqual(self._gaps("a\n\n\n\nb"), 1)
+		self.assertEqual(self._gaps("a\n\n\n\n\nb"), 1)
+		self.assertEqual(self._gaps("a\n\n\n\n\n\nb"), 2)
+
+	def test_gap_after_list(self):
+		"""Regression: markdown-it folds trailing blank lines into the list's map,
+		so the gap has to be measured from the *next* block backwards."""
+		self.assertEqual(self._gaps("- a\n- b\n\n\n\n\np"), 1)
+
+	def test_gap_after_other_block_types(self):
+		self.assertEqual(self._gaps("> quoted\n\n\n\nafter"), 1)
+		self.assertEqual(self._gaps("```\ncode\n```\n\n\n\nafter"), 1)
+		self.assertEqual(self._gaps("---\n\n\n\nafter"), 1)
+		self.assertEqual(self._gaps("| a | b |\n| - | - |\n| 1 | 2 |\n\n\n\nafter"), 1)
+		self.assertEqual(self._gaps("## Heading\n\n\n\nafter"), 1)
+		self.assertEqual(self._gaps("<div>raw</div>\n\n\n\nafter"), 1)
+
+	def test_blank_lines_inside_a_fence_are_untouched(self):
+		result = render_markdown("```\ncode\n\nmore\n```")
+		self.assertNotIn("wiki-blank-line", result)
+		self.assertIn("<pre><code>code\n\nmore\n</code></pre>", result)
+
+	def test_blank_lines_inside_a_table_are_untouched(self):
+		content = "| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |"
+		self.assertEqual(self._gaps(content), 0)
+
+	def test_callout_does_not_inflate_neighbouring_gaps(self):
+		"""Placeholder substitution used to pad with \\n\\n on both sides."""
+		self.assertEqual(self._gaps("before\n\n:::note\nhi\n:::\n\nafter"), 0)
+		self.assertEqual(self._gaps("before\n\n\n\n:::note\nhi\n:::\n\n\n\nafter"), 2)
+
+	def test_video_does_not_inflate_neighbouring_gaps(self):
+		before = "before\n\n![clip](/files/a.mp4)\n\nafter"
+		wide = "before\n\n\n\n![clip](/files/a.mp4)\n\n\n\nafter"
+		self.assertEqual(self._gaps(before), 0)
+		self.assertEqual(self._gaps(wide), 2)
+		self.assertIn("<video", render_markdown(before))
+
+	def test_pdf_does_not_inflate_neighbouring_gaps(self):
+		before = "before\n\n![doc](/files/a.pdf)\n\nafter"
+		wide = "before\n\n\n\n![doc](/files/a.pdf)\n\n\n\nafter"
+		self.assertEqual(self._gaps(before), 0)
+		self.assertEqual(self._gaps(wide), 2)
+		self.assertIn("wiki-pdf-embed", render_markdown(before))
+
+	def test_embed_filename_with_spaces_and_parens_stays_a_block(self):
+		"""Frappe keeps the uploaded filename, so `(2)` and spaces are routine.
+		The embed must still become a block card, not an inline image inside a <p>."""
+		html = render_markdown("![VIEW QUICK 2X5L (2).pdf](/files/VIEW QUICK 2X5L (2).pdf)")
+		self.assertIn("wiki-pdf-embed", html)
+		self.assertNotIn('<p><div class="wiki-pdf-embed"', html)
+
+		html = render_markdown("![my clip (1).mp4](/files/my clip (1).mp4)")
+		self.assertIn('data-type="video-block"', html)
+		self.assertNotIn('<p><div data-type="video-block"', html)
+
+	def test_adjacent_placeholders_do_not_gain_a_gap(self):
+		"""Two custom blocks one newline apart: each side contributes a newline to
+		break the placeholder out as a block, giving three — still one short of the
+		four an author-typed empty paragraph writes, so no gap."""
+		self.assertEqual(self._gaps("![a](/files/a.mp4)\n![b](/files/b.mp4)"), 0)
+		self.assertEqual(self._gaps("![a](/files/a.mp4)\n![b](/files/b.mp4)\n![c](/files/c.mp4)"), 0)
+		self.assertEqual(self._gaps("![a](/files/a.mp4)\n![b](/files/b.pdf)"), 0)
+		self.assertEqual(self._gaps(":::note\nx\n:::\n![a](/files/a.mp4)"), 0)
+		self.assertEqual(self._gaps("![a](/files/a.mp4)\n:::note\nx\n:::"), 0)
+		self.assertEqual(self._gaps(":::note\nx\n:::\n:::tip\ny\n:::"), 0)
+
+	def test_placeholder_glued_to_surrounding_text(self):
+		"""The placeholder still breaks out of the paragraph it was written inside."""
+		result = render_markdown("text\n![a](/files/a.mp4)\ntext2")
+		self.assertNotIn("wiki-blank-line", result)
+		self.assertIn("<video", result)
+		self.assertNotIn("<p>text\n", result.replace("<br />", ""))
+
+	def test_leading_blank_lines(self):
+		self.assertEqual(self._gaps("\n\ntext"), 1)
+		self.assertEqual(self._gaps("\ntext"), 0)
+
+	def test_trailing_blank_lines_are_dropped(self):
+		"""No block to anchor to, and git-synced files often end in stray newlines."""
+		self.assertEqual(self._gaps("text\n\n\n\n"), 0)
+
+	def test_toc_is_unaffected(self):
+		html, headings = render_markdown_with_toc("## A\n\n\n\ntext\n\n## B")
+		self.assertEqual([h["text"] for h in headings], ["A", "B"])
+		self.assertIn('<h2 id="a">A</h2>', html)
+		self.assertIn('<h2 id="b">B</h2>', html)
+		self.assertEqual(html.count('class="wiki-blank-line"'), 1)
+
+	def test_footnote_definitions_do_not_orphan_a_gap(self):
+		"""footnote_tail moves definitions to the end; a gap anchored there would
+		leave a blank paragraph stranded mid-document."""
+		content = "text[^1]\n\n\n\nmore\n\n\n\n[^1]: the note"
+		html = render_markdown(content)
+		self.assertEqual(html.count('class="wiki-blank-line"'), 1)
+		self.assertIn("footnote", html)
+
+	def test_soft_break_renders_as_line_break(self):
+		"""Matches the editor's marked({ breaks: true })."""
+		self.assertIn("<br", render_markdown("line one\nline two"))
+
+
+if __name__ == "__main__":
+	unittest.main()
+
+
+class TestThemeAwareImages(unittest.TestCase):
+	"""An image with a dark mode file is saved as a <picture> block."""
+
+	PICTURE = (
+		"<picture>\n"
+		'  <source srcset="/files/shot-dark.png" media="(prefers-color-scheme: dark)">\n'
+		'  <img src="/files/shot.png" alt="Settings page">\n'
+		"</picture>"
+	)
+
+	def test_picture_keeps_both_sources(self):
+		result = render_markdown(self.PICTURE)
+
+		self.assertIn(
+			'<p><picture><source srcset="/files/shot-dark.png" media="(prefers-color-scheme: dark)">'
+			'<img src="/files/shot.png" alt="Settings page" /></picture></p>',
+			result,
+		)
+
+	def test_caption_is_the_next_sibling_of_the_picture(self):
+		"""markdown-it reads the caption line as part of the raw HTML block."""
+		result = render_markdown(self.PICTURE + "\n*The `settings` page*")
+
+		self.assertRegex(result, r"</picture>\s*<em>The <code>settings</code> page</em></p>")
+		self.assertNotIn("*The", result)
+
+	def test_title_is_kept(self):
+		result = render_markdown(self.PICTURE.replace('alt="Settings page"', 'alt="" title="Settings"'))
+
+		self.assertIn('<img src="/files/shot.png" alt="" title="Settings" />', result)
+
+	def test_alt_removes_script_tags(self):
+		result = render_markdown(
+			self.PICTURE.replace('alt="Settings page"', 'alt="<script>alert(1)</script>Settings"')
+		)
+
+		self.assertIn('alt="Settings"', result)
+		self.assertNotIn("<script>", result)
+
+	def test_picture_inside_a_code_fence_stays_code(self):
+		result = render_markdown(f"```html\n{self.PICTURE}\n```")
+
+		self.assertIn("&lt;picture&gt;", result)
+		self.assertNotIn("<picture>", result)
+
+	def test_other_html_blocks_pass_through(self):
+		result = render_markdown('<div class="note">Raw</div>')
+
+		self.assertIn('<div class="note">Raw</div>', result)
+
+	def test_width_and_alignment_are_kept(self):
+		result = render_markdown(
+			"<picture>\n"
+			'  <img src="/files/shot.png" alt="Settings" width="480" data-align="left">\n'
+			"</picture>\n"
+			"*Caption*"
+		)
+
+		self.assertIn(
+			'<p data-align="left"><picture><img src="/files/shot.png" alt="Settings" width="480" data-align="left" /></picture>'
+			"\n<em>Caption</em></p>",
+			result,
+		)
+
+	def test_consecutive_pictures_keep_their_captions(self):
+		"""With no blank line between them, markdown-it reads both as one HTML block."""
+		result = render_markdown(f"{self.PICTURE}\n*Light*\n{self.PICTURE.replace('shot', 'other')}\n*Other*")
+
+		self.assertEqual(result.count("<p><picture>"), 2)
+		self.assertIn("</picture>\n<em>Light</em></p>", result)
+		self.assertIn("</picture>\n<em>Other</em></p>", result)
+		self.assertNotIn("*Light*", result)
+
+	def test_picture_followed_by_other_html_keeps_its_caption(self):
+		result = render_markdown(f'{self.PICTURE}\n*Light*\n<div class="note">Raw</div>')
+
+		self.assertIn("</picture>\n<em>Light</em></p>", result)
+		self.assertIn('<div class="note">Raw</div>', result)
+		self.assertNotIn("*Light*", result)
+
+	def test_unknown_alignment_is_not_claimed(self):
+		result = render_markdown('<picture>\n  <img src="/files/shot.png" alt="" data-align="x">\n</picture>')
+
+		self.assertNotIn('data-align="x" />', result)

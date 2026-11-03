@@ -1,0 +1,455 @@
+<template>
+	<Tree
+		class="wiki-tree"
+		:nodes="treeNodes"
+		v-model:expanded="expandedKeys"
+		node-key="doc_key"
+		guides="none"
+		:draggable="!readonly && !searchActive"
+		:move="allowMove"
+		@drag-start="onDragStart"
+		@drag-end="onDragEnd"
+	>
+		<template #item="{ node }">
+			<div
+				class="group flex min-h-10 min-w-0 flex-1 items-center gap-1.5 py-1.5"
+				:class="getRowClasses(node)"
+				:data-selected="isSelected(node) || undefined"
+				@click.stop="handleRowClick(node)"
+			>
+				<button
+					v-if="node.is_group && !searchActive"
+					class="p-0.5 hover:bg-surface-gray-3 rounded-4 shrink-0"
+					:aria-label="isNodeExpanded(node.doc_key) ? __('Collapse') : __('Expand')"
+					@click.stop="toggleExpanded(node.doc_key)"
+				>
+					<span
+						class="lucide-chevron-right size-4 text-ink-gray-5 transition-transform duration-200 block"
+						:class="{ 'rotate-90': isNodeExpanded(node.doc_key) }"
+						aria-hidden="true"
+					/>
+				</button>
+
+				<span v-if="node.is_group" class="lucide-folder size-4 text-ink-gray-5 shrink-0" aria-hidden="true" />
+				<span v-else-if="node.is_external_link" class="lucide-link size-4 text-ink-gray-5 shrink-0" aria-hidden="true" />
+				<span v-else class="lucide-file-text size-4 text-ink-gray-5 shrink-0" aria-hidden="true" />
+
+				<div class="flex min-w-0 flex-1 flex-col">
+					<span class="text-sm truncate" :class="getTitleClass(node)">
+						<template v-for="(seg, i) in titleParts(node)" :key="i"><mark v-if="seg.matched" class="bg-surface-amber-2 text-ink-gray-9 rounded-1">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
+					</span>
+					<!-- Why it matched, when the route hit but the title didn't. -->
+					<span v-if="routeParts(node)" class="text-xs text-ink-gray-4 truncate">
+						<template v-for="(seg, i) in routeParts(node)" :key="i"><mark v-if="seg.matched" class="bg-surface-amber-2 text-ink-gray-9 rounded-1">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
+					</span>
+				</div>
+
+				<!-- The tree is a navigation column: a word per row makes it a
+				     list of labels rather than a list of pages. Every state here
+				     is a mark instead — except a failed sync, which asks for an
+				     action and so keeps its words. -->
+				<Badge v-if="node.local_status === 'sync_failed'" variant="subtle" theme="red" size="sm" :title="__('Sync failed — edit again or delete to recover')">
+					{{ __('Sync failed') }}
+				</Badge>
+				<span
+					v-else-if="node.local_status === 'pending_create' || node.local_status === 'pending_update'"
+					class="size-1.5 shrink-0 rounded-full bg-surface-gray-5"
+					:title="__('Syncing…')"
+					:aria-label="__('Syncing…')"
+					role="status"
+				/>
+				<!-- Deleted in this draft: struck through in the row, and a red
+				     dot for the same reason every other change type has one. -->
+				<span
+					v-else-if="isDeleted(node)"
+					class="size-1.5 shrink-0 rounded-full bg-surface-red-5"
+					:title="__('Deleted in this draft. Merge to remove it for everyone.')"
+					:aria-label="__('Deleted')"
+					role="status"
+				/>
+				<span
+					v-else-if="changeTypeMap.get(node.doc_key)"
+					class="size-1.5 shrink-0 rounded-full"
+					:class="getChangeDotClass(changeTypeMap.get(node.doc_key))"
+					:title="getChangeLabel(changeTypeMap.get(node.doc_key))"
+					:aria-label="getChangeLabel(changeTypeMap.get(node.doc_key))"
+					role="status"
+				/>
+				<!-- Unpublished is not a change, so it is not a dot: the same
+				     eye-off the space list uses for an unpublished space. -->
+				<span
+					v-else-if="!node.is_group && !node.is_published"
+					class="lucide-eye-off size-3.5 shrink-0 text-ink-gray-4"
+					:title="__('Unpublished')"
+					:aria-label="__('Unpublished')"
+					role="status"
+				/>
+
+				<!-- Hover-reveal on desktop; always visible on touch (no hover)
+				     so row actions stay reachable on a phone. -->
+				<div v-if="!readonly" class="flex items-center opacity-0 group-hover:opacity-100 max-md:opacity-100 transition-opacity" @click.stop>
+					<Dropdown :options="getDropdownOptions(node)">
+						<Button variant="ghost" size="sm">
+							<span class="lucide-more-horizontal size-4" aria-hidden="true" />
+						</Button>
+					</Dropdown>
+				</div>
+			</div>
+		</template>
+	</Tree>
+</template>
+
+<script setup>
+import { useChangeTypeDisplay } from '@/composables/useChangeTypeDisplay';
+import { highlightSegments } from '@/composables/useTreeSearch';
+import { useDraftWorkspaceStore } from '@/stores/draftWorkspace';
+import { useStorage } from '@vueuse/core';
+import { Badge, Button, Dropdown, Tree, toast } from 'frappe-ui';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+
+const props = defineProps({
+	items: {
+		type: Array,
+		required: true,
+	},
+	changeTypeMap: {
+		type: Map,
+		default: () => new Map(),
+	},
+	parentName: {
+		type: String,
+		default: null,
+	},
+	spaceId: {
+		type: String,
+		default: null,
+	},
+	// Read-only spaces (git-synced) render the tree for browsing only: no
+	// drag-reorder, no row actions, no add-page/group affordances.
+	readonly: {
+		type: Boolean,
+		default: false,
+	},
+	// While a tree search is active `items` is the flat result list, not the
+	// tree: rows carry no children, and drag is disabled.
+	searchActive: {
+		type: Boolean,
+		default: false,
+	},
+	scoreMap: {
+		type: Object, // Map<doc_key, fuzzysort result> | null
+		default: null,
+	},
+	selectedPageId: {
+		type: String,
+		default: null,
+	},
+	selectedDraftKey: {
+		type: String,
+		default: null,
+	},
+});
+
+const emit = defineEmits([
+	'create',
+	'delete',
+	'rename',
+	'external-link',
+	'edit-external-link',
+	'drag-state-change',
+	'reveal-group',
+]);
+
+const router = useRouter();
+const route = useRoute();
+const draftStore = useDraftWorkspaceStore();
+const { getChangeDotClass, getChangeLabel } = useChangeTypeDisplay();
+
+const storageKey = computed(
+	() => `wiki-tree-expanded-nodes-${props.spaceId || 'default'}`,
+);
+const expandedNodes = useStorage(storageKey, {});
+
+function isNodeExpanded(name) {
+	return expandedNodes.value[name] === true;
+}
+
+function toggleExpanded(name) {
+	expandedNodes.value[name] = !expandedNodes.value[name];
+}
+
+// Tree takes the open set as keys and never writes to the nodes we hand it.
+// Ours is persisted as a map, so adapt both ways rather than migrate what is
+// already in everyone's localStorage.
+const expandedKeys = computed({
+	get: () =>
+		Object.keys(expandedNodes.value).filter((key) => expandedNodes.value[key]),
+	set: (keys) => {
+		expandedNodes.value = Object.fromEntries(keys.map((key) => [key, true]));
+	},
+});
+
+// Node order is left to us via @drag-end, so we hand Tree a derived copy of
+// the store tree: `label` feeds the drag ghost and keyboard typeahead. Held in
+// a ref so the copies stay reactive.
+const treeNodes = ref([]);
+
+function mapNodes(nodes) {
+	return (nodes || []).map((node) => ({
+		...node,
+		label: node.title,
+		children: node.children?.length ? mapNodes(node.children) : undefined,
+	}));
+}
+
+watch(
+	() => props.items,
+	() => {
+		treeNodes.value = mapNodes(props.items);
+	},
+	{ immediate: true, deep: true },
+);
+
+// Selecting a page from the sidebar shouldn't pile up history, and the bare
+// space landing ("select a page") shouldn't become a back target. When we are
+// already inside this space, replace instead of push so browser-back returns
+// to wherever the user entered the space from rather than ping-ponging
+// between pages and the landing.
+function navigateToTreePage(to) {
+	if (route.params.spaceId === props.spaceId) {
+		router.replace(to);
+	} else {
+		router.push(to);
+	}
+}
+
+// A staged deletion (this change request's own, or one the diff reports) keeps
+// its row until the change request is merged, struck through and inert.
+function isDeleted(node) {
+	return (
+		!!node.is_deleted || props.changeTypeMap.get(node.doc_key) === 'deleted'
+	);
+}
+
+function handleRowClick(node) {
+	if (isDeleted(node)) {
+		return;
+	}
+
+	if (node.is_group) {
+		if (props.searchActive) {
+			emit('reveal-group', node);
+		} else {
+			toggleExpanded(node.doc_key);
+		}
+		return;
+	}
+
+	// External links open edit dialog instead of navigating
+	if (node.is_external_link) {
+		if (!props.readonly) emit('edit-external-link', node);
+		return;
+	}
+
+	if (node.document_name) {
+		navigateToTreePage({
+			name: 'SpacePage',
+			params: { spaceId: props.spaceId, pageId: node.document_name },
+		});
+		return;
+	}
+
+	navigateToTreePage({
+		name: 'DraftChangeRequest',
+		params: { spaceId: props.spaceId, docKey: node.doc_key },
+	});
+}
+
+function isSelected(node) {
+	const isSelectedPage =
+		!node.is_group &&
+		!!props.selectedPageId &&
+		node.document_name === props.selectedPageId;
+	const isSelectedDraft =
+		!node.document_name &&
+		!!props.selectedDraftKey &&
+		node.doc_key === props.selectedDraftKey;
+	return isSelectedPage || isSelectedDraft;
+}
+
+function getRowClasses(node) {
+	if (isDeleted(node)) {
+		return 'cursor-not-allowed opacity-60';
+	}
+	return 'cursor-pointer';
+}
+
+function getTitleClass(node) {
+	if (isDeleted(node)) {
+		return 'text-ink-gray-4 line-through';
+	}
+	if (node.is_published || node.is_group) {
+		return 'text-ink-gray-8';
+	}
+	return 'text-ink-gray-5';
+}
+
+// fuzzysort multi-key result is array-like: [0] = title key, [1] = route key.
+// Render as escaped { text, matched } segments (never an HTML string) — see
+// highlightSegments. titleParts always returns an array (plain title when no
+// match); routeParts whenever the route matched, plus — while searching — as
+// plain text, since a flat row has no ancestors to place it.
+function titleParts(node) {
+	const result = props.scoreMap?.get(node.doc_key)?.[0];
+	return highlightSegments(result) || [{ text: node.title, matched: false }];
+}
+
+function routeParts(node) {
+	const routeSegments = highlightSegments(
+		props.scoreMap?.get(node.doc_key)?.[1],
+	);
+	if (routeSegments) return routeSegments;
+	if (props.searchActive && node.route) {
+		return [{ text: node.route, matched: false }];
+	}
+	return null;
+}
+
+// Reparenting is only allowed into groups; sibling reorder is always fine.
+// Tree's built-in guards (drop-on-self, drop-into-own-descendant) run first.
+function allowMove({ target, position }) {
+	return position !== 'inside' || !!target.is_group;
+}
+
+function onDragStart() {
+	emit('drag-state-change', true);
+}
+
+function onDragEnd(info) {
+	emit('drag-state-change', false);
+	if (!info) return;
+
+	// Push the move into the workspace store synchronously so the tree
+	// rebuilds with the new order. The store also debounces the backend
+	// sync, so rapid drags coalesce into one roundtrip.
+	draftStore.moveNode({
+		docKey: info.node.doc_key,
+		newParentKey: info.to || props.parentName || null,
+		newIndex: info.newIndex,
+	});
+}
+
+async function togglePublish(node) {
+	const newStatus = node.is_published ? 0 : 1;
+	try {
+		await draftStore.updateNode(node.doc_key, { is_published: newStatus });
+	} catch (error) {
+		toast.error(error.messages?.[0] || __('Error updating publish status'));
+	}
+}
+
+async function restore(node) {
+	try {
+		await draftStore.restoreNode(node.doc_key);
+	} catch (error) {
+		toast.error(error.messages?.[0] || __('Error restoring page'));
+	}
+}
+
+function getDropdownOptions(node) {
+	const options = [];
+
+	if (isDeleted(node)) {
+		return [
+			{
+				label: __('Restore'),
+				icon: 'lucide-rotate-ccw',
+				onClick: () => restore(node),
+			},
+		];
+	}
+
+	if (node.is_group) {
+		options.push(
+			...[
+				{
+					label: __('New Page'),
+					icon: 'lucide-file-plus',
+					onClick: () => emit('create', node.doc_key, false),
+				},
+				{
+					label: __('New Group'),
+					icon: 'lucide-folder-plus',
+					onClick: () => emit('create', node.doc_key, true),
+				},
+				{
+					label: __('External Link'),
+					icon: 'lucide-link',
+					onClick: () => emit('external-link', node.doc_key),
+				},
+				{
+					label: __('Rename'),
+					icon: 'lucide-edit-2',
+					onClick: () => emit('rename', node),
+				},
+			],
+		);
+	}
+
+	if (!node.is_group) {
+		options.push({
+			label: __('Change Title'),
+			icon: 'lucide-edit-2',
+			onClick: () => emit('rename', node),
+		});
+		options.push({
+			label: node.is_published ? __('Unpublish') : __('Publish'),
+			icon: node.is_published ? 'lucide-eye-off' : 'lucide-eye',
+			onClick: () => togglePublish(node),
+		});
+	}
+
+	const hasChildren = node.is_group && node.children?.length > 0;
+	if (!hasChildren) {
+		options.push({
+			group: __('Danger'),
+			options: [
+				{
+					label: __('Delete'),
+					icon: 'lucide-trash-2',
+					theme: 'red',
+					onClick: () => emit('delete', node),
+				},
+			],
+		});
+	}
+
+	return options;
+}
+
+onBeforeUnmount(() => {
+	emit('drag-state-change', false);
+});
+</script>
+
+<!-- Unscoped: Tree renders a multi-root template, so the parent scope id never
+     reaches its <ul> and scoped selectors can't match. .wiki-tree namespaces. -->
+<style>
+.wiki-tree {
+	/* Rows carry two-line search results and py-1.5 content — size to content
+	   instead of the Tree default 32px. */
+	--tree-row-height: auto;
+	/* One level of indent equals a group's chevron column (w-5 button + gap-1.5
+	   = 20px + 6px). Leaves omit that chevron placeholder, so this makes a nested
+	   page's icon line up under its parent folder's icon instead of sitting left
+	   of it. */
+	--tree-indent: 26px;
+}
+
+/* Selected page/draft highlight lives on the full-width row (the #item slot
+   can't reach its parent), keyed off the data-selected marker inside it. */
+.wiki-tree [data-slot='row']:has([data-selected]) {
+	background-color: var(--surface-gray-3);
+}
+</style>

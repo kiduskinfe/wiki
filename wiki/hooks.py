@@ -7,13 +7,36 @@ app_color = "grey"
 app_email = "developers@frappe.io"
 app_license = "MIT"
 
-page_renderer = "wiki.wiki.doctype.wiki_page.wiki_renderer.WikiPageRenderer"
-
-website_route_rules = [
-	{"from_route": "/<path:wiki_page>/edit-wiki", "to_route": "/edit"},
-	{"from_route": "/<path:wiki_page>/new-wiki", "to_route": "/new"},
-	{"from_route": "/<path:wiki_page>/revisions", "to_route": "/revisions"},
+add_to_apps_screen = [
+	{
+		"name": "wiki",
+		"logo": "/assets/wiki/images/wiki-logo.png",
+		"title": "Wiki",
+		"route": "/wiki-app",
+		"has_permission": "wiki.utils.check_app_permission",
+	}
 ]
+
+page_renderer = [
+	# Crawler routes (.md, llms.txt, sitemap.xml) resolve first — they take over
+	# paths that would otherwise fall through to the reader or the framework.
+	"wiki.wiki.crawler_renderer.CrawlerRenderer",
+	"wiki.frappe_wiki.doctype.wiki_document.wiki_document.WikiDocumentRenderer",
+]
+export_python_type_annotations = True
+
+# SQLite Search
+sqlite_search = ["wiki.frappe_wiki.doctype.wiki_document.wiki_sqlite_search.WikiSQLiteSearch"]
+
+
+jinja = {
+	"methods": [
+		"wiki.utils.get_tailwindcss_hash",
+		"wiki.utils.get_asset_hash",
+		"wiki.utils.lucide_svg",
+		"wiki.utils.space_mark",
+	]
+}
 
 # Includes in <head>
 # ------------------
@@ -65,7 +88,7 @@ website_route_rules = [
 # before_install = "wiki.install.before_install"
 after_install = "wiki.install.after_install"
 
-after_migrate = ["wiki.wiki.doctype.wiki_page.search.rebuild_index_in_background"]
+# after_migrate = ["wiki.wiki.doctype.wiki_page.search.build_index_in_background"]
 
 # Desk Notifications
 # ------------------
@@ -77,14 +100,16 @@ after_migrate = ["wiki.wiki.doctype.wiki_page.search.rebuild_index_in_background
 # -----------
 # Permissions evaluated in scripted ways
 
-# AddisFly: a Wiki Space with Allowed Roles (the Board) is closed everywhere —
-# desk form, lists, Ask AI retrieval — not only on the rendered wiki page.
 permission_query_conditions = {
-	"Wiki Page": "wiki.wiki.doctype.wiki_page.wiki_page.get_permission_query_conditions",
+	"Wiki Space": "wiki.permissions.wiki_space_query_conditions",
+	"Wiki Document": "wiki.permissions.wiki_document_query_conditions",
+	"Wiki Change Request": "wiki.permissions.wiki_cr_query_conditions",
 }
 
 has_permission = {
-	"Wiki Page": "wiki.wiki.doctype.wiki_page.wiki_page.has_permission",
+	"Wiki Space": "wiki.permissions.wiki_space_has_permission",
+	"Wiki Document": "wiki.permissions.wiki_document_has_permission",
+	"Wiki Change Request": "wiki.permissions.wiki_cr_has_permission",
 }
 
 # DocType Class
@@ -99,19 +124,42 @@ has_permission = {
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"User": {"after_insert": "wiki.utils.add_wiki_user_role"},
+	"Wiki Document": {
+		"on_update": "wiki.frappe_wiki.doctype.wiki_document.wiki_document.on_wiki_document_update",
+		"on_trash": "wiki.frappe_wiki.doctype.wiki_document.wiki_document.on_wiki_document_trash",
+	},
+	# A space's roles, route and publish state decide what the crawler indexes
+	# list, and none of them touch a Wiki Document.
+	"Wiki Space": {
+		"on_update": "wiki.wiki.crawler_cache.clear_crawler_cache",
+		"on_trash": "wiki.wiki.crawler_cache.clear_crawler_cache",
+	},
+}
+
+# The cached sitemap also lists the site's other pages (Builder, Web Page, ...),
+# which change without touching the wiki but always clear the website cache.
+website_clear_cache = "wiki.wiki.crawler_cache.clear_crawler_cache"
+
+# Auto-prune the webhook delivery log (Frappe's daily log-clearing runs each
+# doctype's `clear_old_logs`).
+default_log_clearing_doctypes = {
+	"Wiki GitHub Webhook Log": 30,
+}
 
 # Scheduled Tasks
 # ---------------
 
 scheduler_events = {
-	"all": ["wiki.wiki.doctype.wiki_page.search.rebuild_index_if_not_exists"],
+	"cron": {
+		"*/10 * * * *": [
+			"wiki.analytics_store.ingest_recent_views",
+		],
+	},
+	"daily": [
+		"wiki.telemetry_scan.send_site_profile",
+	],
 }
 
 # scheduler_events = {
@@ -161,3 +209,7 @@ scheduler_events = {
 # exempt linked doctypes from being automatically cancelled
 #
 # auto_cancel_exempted_doctypes = ["Auto Repeat"]
+
+website_route_rules = [
+	{"from_route": "/wiki-app/<path:app_path>", "to_route": "wiki-app"},
+]
